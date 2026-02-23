@@ -96,7 +96,7 @@ runs:
           SECRET_COUNT=$(jq 'length' "$GITLEAKS_REPORT" 2>/dev/null || echo "0")
           if [ "$SECRET_COUNT" -gt 0 ]; then
             echo "⚠️  Found $SECRET_COUNT potential secret(s):"
-            jq -r '.[] | "  - \(.RuleID) in \(.File):\(.StartLine)"' "$GITLEAKS_REPORT" 2>/dev/null | head -20
+            jq -r '.[] | "  - \(.RuleID) in \(.File):\(.StartLine)"' "$GITLEAKS_REPORT" 2>/dev/null | head -20 || true
             if [ "$SECRET_COUNT" -gt 20 ]; then
               echo "  ... and $((SECRET_COUNT - 20)) more"
             fi
