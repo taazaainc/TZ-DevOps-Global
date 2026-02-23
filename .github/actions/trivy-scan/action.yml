@@ -1,0 +1,106 @@
+name: Trivy Container Image Security Scan
+description: >
+  Scans a pre-built Docker image for vulnerabilities using Trivy.
+  Uploads a JSON report as a workflow artifact.
+  Set fail-on-critical to 'true' to make CRITICAL vulnerabilities block the pipeline.
+
+inputs:
+  image-name:
+    description: Full image name including tag (e.g. tcr.taazaa.cloud/contacthealth-dev/assessment:test-42)
+    required: true
+  service-name:
+    description: Service name used for artifact naming
+    required: true
+  severity:
+    description: Comma-separated severity levels to scan
+    required: false
+    default: "CRITICAL,HIGH,MEDIUM"
+  fail-on-critical:
+    description: Set to 'true' to fail the pipeline when CRITICAL vulnerabilities are found
+    required: false
+    default: "false"
+
+outputs:
+  critical-count:
+    description: Number of CRITICAL vulnerabilities found
+    value: ${{ steps.scan.outputs.critical_count }}
+  high-count:
+    description: Number of HIGH vulnerabilities found
+    value: ${{ steps.scan.outputs.high_count }}
+
+runs:
+  using: composite
+  steps:
+    - name: Trivy Security Scan
+      id: scan
+      shell: bash
+      run: |
+        SERVICE_NAME_SAFE=$(echo "${{ inputs.service-name }}" | tr ' ' '-' | tr '/' '-')
+        TRIVY_REPORT="/tmp/trivy-report-${SERVICE_NAME_SAFE}.json"
+        IMAGE="${{ inputs.image-name }}"
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "🔍 Trivy Security Scan"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Image:    $IMAGE"
+        echo "Service:  ${{ inputs.service-name }}"
+        echo "Severity: ${{ inputs.severity }}"
+        echo ""
+
+        rm -f "$TRIVY_REPORT"
+
+        echo "Generating JSON vulnerability report..."
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          aquasec/trivy:latest image \
+          --format json \
+          --ignore-unfixed \
+          --severity "${{ inputs.severity }}" \
+          --cache-dir /root/.cache/trivy \
+          "$IMAGE" 2>/dev/null | jq '.' > "$TRIVY_REPORT" 2>/dev/null || true
+
+        CRITICAL_COUNT=0
+        HIGH_COUNT=0
+        MEDIUM_COUNT=0
+
+        if [ -s "$TRIVY_REPORT" ]; then
+          echo "✅ JSON report generated"
+          CRITICAL_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$TRIVY_REPORT" 2>/dev/null || echo "0")
+          HIGH_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$TRIVY_REPORT" 2>/dev/null || echo "0")
+          MEDIUM_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length' "$TRIVY_REPORT" 2>/dev/null || echo "0")
+
+          echo "📊 Vulnerability Summary:"
+          echo "  CRITICAL: $CRITICAL_COUNT"
+          echo "  HIGH:     $HIGH_COUNT"
+          echo "  MEDIUM:   $MEDIUM_COUNT"
+        else
+          echo "Trivy JSON report was not created or is empty"
+          echo '{"Results": []}' > "$TRIVY_REPORT"
+        fi
+
+        echo "Detailed Scan Results (CRITICAL & HIGH only):"
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          aquasec/trivy:latest image \
+          --format table \
+          --exit-code 0 \
+          --ignore-unfixed \
+          --severity CRITICAL,HIGH \
+          --cache-dir /root/.cache/trivy \
+          "$IMAGE"
+
+        echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
+        echo "high_count=$HIGH_COUNT" >> $GITHUB_OUTPUT
+
+        if [ "${{ inputs.fail-on-critical }}" = "true" ] && [ "${CRITICAL_COUNT:-0}" -gt 0 ]; then
+          echo "::error::Pipeline failed: $CRITICAL_COUNT CRITICAL vulnerabilities found in $IMAGE"
+          exit 1
+        fi
+
+    - name: Upload Trivy Report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: trivy-report-${{ inputs.service-name }}
+        path: /tmp/trivy-report-*.json
+        if-no-files-found: warn

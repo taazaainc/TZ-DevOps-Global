@@ -1,0 +1,112 @@
+name: GitLeaks Secret Scanning
+description: >
+  Scans the repository source code for leaked secrets using GitLeaks.
+  Uploads a JSON report as a workflow artifact.
+  Does NOT fail the pipeline on findings by default — set fail-on-secrets
+  to 'true' to make it blocking.
+
+inputs:
+  gitleaks-version:
+    description: GitLeaks binary version to download
+    required: false
+    default: "8.22.1"
+  fail-on-secrets:
+    description: Set to 'true' to fail the pipeline when secrets are found
+    required: false
+    default: "false"
+  service-name:
+    description: Service name used for artifact naming (e.g. Assessment, CarePlan)
+    required: true
+  config-file:
+    description: Path to .gitleaks.toml config file relative to repo root (optional)
+    required: false
+    default: ".gitleaks.toml"
+
+outputs:
+  secret-count:
+    description: Number of secrets found
+    value: ${{ steps.scan.outputs.secret_count }}
+
+runs:
+  using: composite
+  steps:
+    - name: GitLeaks Secret Scanning
+      id: scan
+      shell: bash
+      run: |
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "🔐 GitLeaks Secret Scanning"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        SERVICE_NAME_SAFE=$(echo "${{ inputs.service-name }}" | tr ' ' '-' | tr '/' '-')
+        GITLEAKS_REPORT="/tmp/gitleaks-report-${SERVICE_NAME_SAFE}.json"
+        GITLEAKS_VERSION="${{ inputs.gitleaks-version }}"
+
+        echo "Service: ${{ inputs.service-name }}"
+        echo "Scanning source code for secrets..."
+        echo ""
+
+        # Download gitleaks binary if not cached
+        if [ ! -f "/tmp/gitleaks" ]; then
+          echo "Downloading GitLeaks v${GITLEAKS_VERSION}..."
+          wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            -O /tmp/gitleaks.tar.gz
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          chmod +x /tmp/gitleaks
+          rm /tmp/gitleaks.tar.gz
+        fi
+
+        CONFIG_FILE="${GITHUB_WORKSPACE}/${{ inputs.config-file }}"
+
+        if [ -f "$CONFIG_FILE" ]; then
+          echo "Using config: $CONFIG_FILE"
+          /tmp/gitleaks detect \
+            --source "$GITHUB_WORKSPACE" \
+            --no-git \
+            --config "$CONFIG_FILE" \
+            --report-path "$GITLEAKS_REPORT" \
+            --report-format json \
+            --exit-code 0 || true
+        else
+          /tmp/gitleaks detect \
+            --source "$GITHUB_WORKSPACE" \
+            --no-git \
+            --report-path "$GITLEAKS_REPORT" \
+            --report-format json \
+            --exit-code 0 || true
+        fi
+
+        echo ""
+        echo "GitLeaks scan completed"
+
+        SECRET_COUNT=0
+        if [ -f "$GITLEAKS_REPORT" ]; then
+          SECRET_COUNT=$(jq 'length' "$GITLEAKS_REPORT" 2>/dev/null || echo "0")
+          if [ "$SECRET_COUNT" -gt 0 ]; then
+            echo "⚠️  Found $SECRET_COUNT potential secret(s):"
+            jq -r '.[] | "  - \(.RuleID) in \(.File):\(.StartLine)"' "$GITLEAKS_REPORT" 2>/dev/null | head -20
+            if [ "$SECRET_COUNT" -gt 20 ]; then
+              echo "  ... and $((SECRET_COUNT - 20)) more"
+            fi
+          else
+            echo "✅ No secrets detected"
+          fi
+        else
+          echo "⚠️  No report generated"
+          echo "[]" > "$GITLEAKS_REPORT"
+        fi
+
+        echo "secret_count=$SECRET_COUNT" >> $GITHUB_OUTPUT
+
+        if [ "${{ inputs.fail-on-secrets }}" = "true" ] && [ "$SECRET_COUNT" -gt 0 ]; then
+          echo "::error::Pipeline failed: $SECRET_COUNT secret(s) detected by GitLeaks"
+          exit 1
+        fi
+
+    - name: Upload GitLeaks Report
+      uses: actions/upload-artifact@v4
+      if: always()
+      with:
+        name: gitleaks-report-${{ inputs.service-name }}
+        path: /tmp/gitleaks-report-*.json
+        if-no-files-found: warn
