@@ -1,0 +1,35 @@
+# GitLeaks Configuration File
+# Shared across all Taazaa repos via TZ-DevOps-Global
+# Extends default gitleaks config and excludes temporary build artifacts
+
+# Extend the default gitleaks configuration (includes all default rules)
+[extend]
+useDefault = true
+
+# Global allowlist to exclude paths from scanning
+[allowlist]
+description = "Exclude temporary build artifacts and analysis files"
+paths = [
+    # SonarQube temporary analysis files
+    '''\.sonarqube/''',
+
+    # Build output directories
+    '''.*/bin/.*''',
+    '''.*/obj/.*''',
+    '''.*/TestResults/.*''',
+
+    # NuGet packages
+    '''.*/packages/.*''',
+
+    # IDE and editor files
+    '''\.vs/''',
+    '''\.vscode/''',
+    '''.*\.suo$''',
+    '''.*\.user$''',
+    '''.*\.userosscache$''',
+    '''.*\.sln\.docstates$''',
+
+    # OS files
+    '''\.DS_Store''',
+    '''Thumbs\.db''',
+]

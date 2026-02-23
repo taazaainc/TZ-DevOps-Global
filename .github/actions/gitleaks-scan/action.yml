@@ -56,10 +56,22 @@ runs:
           rm /tmp/gitleaks.tar.gz
         fi
 
-        CONFIG_FILE="${GITHUB_WORKSPACE}/${{ inputs.config-file }}"
+        # Resolve config: prefer repo-local file, fall back to global config from TZ-DevOps-Global
+        LOCAL_CONFIG="${GITHUB_WORKSPACE}/${{ inputs.config-file }}"
+        GLOBAL_CONFIG="${{ github.action_path }}/../../../../.gitleaks.toml"
 
-        if [ -f "$CONFIG_FILE" ]; then
-          echo "Using config: $CONFIG_FILE"
+        if [ -f "$LOCAL_CONFIG" ]; then
+          CONFIG_FILE="$LOCAL_CONFIG"
+          echo "Using repo-local config: $CONFIG_FILE"
+        elif [ -f "$GLOBAL_CONFIG" ]; then
+          CONFIG_FILE="$GLOBAL_CONFIG"
+          echo "Using global config from TZ-DevOps-Global: $CONFIG_FILE"
+        else
+          CONFIG_FILE=""
+          echo "No config file found — using gitleaks defaults"
+        fi
+
+        if [ -n "$CONFIG_FILE" ]; then
           /tmp/gitleaks detect \
             --source "$GITHUB_WORKSPACE" \
             --no-git \
