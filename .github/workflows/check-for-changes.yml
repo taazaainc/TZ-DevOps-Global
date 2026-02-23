@@ -1,0 +1,138 @@
+name: Check For Changes
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: >
+          JSON array of runner labels, e.g. '["self-hosted","linux","your-runner-label"]'.
+          Must match the self-hosted runner labels in the calling repository.
+        required: false
+        default: '["self-hosted"]'
+        type: string
+      variables-json-path:
+        description: >
+          Relative path to the variables.json file inside the repository.
+          Defaults to the standard location used across all projects.
+        required: false
+        default: ".github/workflows/variables.json"
+        type: string
+    outputs:
+      changed_services:
+        description: "JSON array of service objects that have changes. Empty array [] if none."
+        value: ${{ jobs.check-for-changes.outputs.changed_services }}
+
+jobs:
+  check-for-changes:
+    runs-on: ${{ fromJson(inputs.runner) }}
+    outputs:
+      changed_services: ${{ steps.detect-changes.outputs.changed_services }}
+    steps:
+      - name: Checkout into a new folder
+        uses: actions/checkout@v4
+        with:
+          path: repo
+          fetch-depth: 0
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          token: ${{ github.token }}
+
+      - name: Configure Git safe directory
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE/repo"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Verify variables.json exists
+        run: |
+          VAR_FILE="repo/${{ inputs.variables-json-path }}"
+          if [ ! -f "$VAR_FILE" ]; then
+            echo "::error::variables.json file missing at: $VAR_FILE"
+            exit 1
+          else
+            echo "Found variables.json at: $VAR_FILE"
+          fi
+
+      - name: Validate variables.json syntax
+        run: jq empty "repo/${{ inputs.variables-json-path }}"
+
+      - name: Identify changed services with metadata
+        id: detect-changes
+        run: |
+          cd repo
+          services_file="${{ inputs.variables-json-path }}"
+          changed_services=()
+
+          # Determine base reference based on event type and action:
+          #
+          # pull_request / synchronize (normal push to existing PR):
+          #   Use github.event.before..HEAD — detects only the commits in THIS push.
+          #   Handles multiple commits pushed at once correctly.
+          #   If BEFORE SHA is missing (force push), falls back to merge-base.
+          #
+          # pull_request / opened or reopened:
+          #   Use merge-base..HEAD — full branch scan vs base branch.
+          #
+          # push to deploy/* branches:
+          #   Use HEAD^..HEAD — only what this merge/commit brought in.
+
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            ACTION="${{ github.event.action }}"
+            BEFORE="${{ github.event.before }}"
+
+            if [ "$ACTION" = "synchronize" ] && git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+              # Normal push to existing PR — scan only commits in this push
+              base_ref="$BEFORE"
+              echo "Incremental PR scan: $base_ref..HEAD (push to existing PR)"
+            else
+              # PR opened/reopened, or force-push (BEFORE SHA not in history) — full branch scan
+              git fetch origin "$GITHUB_BASE_REF"
+              base_ref=$(git merge-base HEAD "origin/$GITHUB_BASE_REF")
+              echo "Full branch scan: merge-base $base_ref..HEAD"
+            fi
+          else
+            # Push to deploy/* — compare only what this commit/merge brought in
+            base_ref="HEAD^"
+            echo "Deploy push scan: HEAD^..HEAD"
+          fi
+
+          for service in $(jq -r 'keys[]' "$services_file"); do
+            changeset_path=$(jq -r --arg s "$service" '.[$s].changeset_path' "$services_file")
+
+            # Check multiple changeset paths (comma-separated)
+            changed=false
+
+            IFS=',' read -ra PATHS <<< "$changeset_path"
+            for path in "${PATHS[@]}"; do
+              # Trim whitespace
+              path=$(echo "$path" | xargs)
+              if [ -n "$path" ] && git diff --name-only "$base_ref" HEAD -- "$path" 2>/dev/null | grep -q .; then
+                changed=true
+                echo "Detected change in $service (path: $path)"
+              fi
+            done
+
+            if [ "$changed" = true ]; then
+              svc_data=$(jq --arg s "$service" '.[$s]' "$services_file")
+              changed_services+=("$svc_data")
+            else
+              echo "No changes in $service"
+            fi
+          done
+
+          if [ ${#changed_services[@]} -eq 0 ]; then
+            echo "changed_services=[]" >> $GITHUB_OUTPUT
+            echo "No services changed"
+          else
+            json_output=$(printf "%s\n" "${changed_services[@]}" | jq -s .)
+            echo "changed_services<<EOF" >> $GITHUB_OUTPUT
+            echo "$json_output" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "Changed services: ${#changed_services[@]}"
+          fi
+
+      - name: Cleanup checkout subfolder
+        if: always()
+        run: |
+          # Remove the repo/ subfolder checked out by this job.
+          # On shared runners, leftover directories accumulate across runs and waste disk space.
+          rm -rf "$GITHUB_WORKSPACE/repo" || true
+          echo "Cleaned up repo/ checkout subfolder"
