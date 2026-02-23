@@ -5,7 +5,7 @@ on:
     inputs:
       runner:
         description: >
-          JSON array of runner labels, e.g. '["self-hosted","linux","taazaa.shared.runner.01"]'.
+          JSON array of runner labels, e.g. '["self-hosted","linux","your-runner-label"]'.
           Must match the self-hosted runner labels in the calling repository.
         required: false
         default: '["self-hosted"]'
