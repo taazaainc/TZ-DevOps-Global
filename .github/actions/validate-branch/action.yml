@@ -1,8 +1,10 @@
 name: Validate Branch Name
 description: >
   Enforces branch naming conventions. Fails if the PR source branch does not
-  start with feature/, bugfix/, hotfix/, or release/.
+  start with an allowed prefix (feature/, bugfix/, hotfix/, release/ by default).
+  Promotion PRs between deploy/* branches are automatically skipped.
   Only runs on pull_request events; skipped silently on push.
+  No checkout required — reads branch name from GitHub event context.
 
 inputs:
   allowed-prefixes:
@@ -11,6 +13,12 @@ inputs:
       Override only if your repo uses different conventions.
     required: false
     default: "feature,bugfix,hotfix,release"
+  skip-prefixes:
+    description: >
+      Comma-separated list of branch prefixes that bypass validation entirely.
+      Used for controlled environment/promotion branches (e.g. deploy).
+    required: false
+    default: "deploy"
 
 runs:
   using: composite
@@ -22,7 +30,16 @@ runs:
         BRANCH="${{ github.head_ref }}"
         echo "PR source branch: $BRANCH"
 
-        # Build regex from allowed-prefixes input
+        # Skip validation for controlled promotion branches (e.g. deploy/* -> deploy/*)
+        # These are environment branches, not developer branches.
+        SKIP_PREFIXES="${{ inputs.skip-prefixes }}"
+        SKIP_REGEX="^($(echo "$SKIP_PREFIXES" | tr ',' '|'))/"
+        if [[ "$BRANCH" =~ $SKIP_REGEX ]]; then
+          echo "Skipping validation — '$BRANCH' is a controlled promotion branch"
+          exit 0
+        fi
+
+        # Validate developer branch naming convention
         PREFIXES="${{ inputs.allowed-prefixes }}"
         REGEX="^($(echo "$PREFIXES" | tr ',' '|'))/"
 
@@ -30,7 +47,7 @@ runs:
           echo "✅ Branch name '$BRANCH' follows naming convention"
         else
           echo "::error::Branch name '$BRANCH' does not follow the required naming convention."
-          echo "::error::Allowed prefixes: $(echo "$PREFIXES" | tr ',' '/')/"
+          echo "::error::Allowed prefixes: $(echo "$PREFIXES" | tr ',' ' | ')/"
           echo "::error::Please rename your branch and re-open the PR."
           exit 1
         fi
