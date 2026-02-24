@@ -1,0 +1,149 @@
+name: GitHub Restrictions
+description: >
+  Centralized PR gate enforcement. All PR checks run in sequence from this single action.
+  Add new checks here — all repos that call this action inherit them automatically.
+  Currently enforces:
+    1. Branch naming convention
+    2. PR size limits (files changed + lines added)
+
+inputs:
+  allowed-prefixes:
+    description: >
+      Comma-separated list of allowed branch prefixes.
+      Override only if your repo uses different conventions.
+    required: false
+    default: "feature,bugfix,hotfix,release"
+  skip-prefixes:
+    description: >
+      Comma-separated list of branch prefixes that bypass all validation.
+      Used for controlled environment/promotion branches (e.g. deploy).
+    required: false
+    default: "deploy"
+  max-files:
+    description: >
+      Maximum number of files allowed to be changed in a single PR.
+      Set to 0 to disable this check.
+    required: false
+    default: "0"
+  max-lines:
+    description: >
+      Maximum number of lines (added + deleted) allowed in a single PR.
+      Set to 0 to disable this check.
+    required: false
+    default: "0"
+  size-exempt-label:
+    description: >
+      PR label name that bypasses the PR size check.
+      If this label is present on the PR, size limits are not enforced.
+    required: false
+    default: "size-exempt"
+
+runs:
+  using: composite
+  steps:
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 1: Validate Branch Name
+    # Enforces branch naming conventions on PR source branch.
+    # Promotion PRs (deploy/* -> deploy/*) are automatically skipped.
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: Validate Branch Name
+      if: github.event_name == 'pull_request'
+      shell: bash
+      run: |
+        BRANCH="${{ github.head_ref }}"
+        echo "PR source branch: $BRANCH"
+
+        # Skip validation for controlled promotion branches (e.g. deploy/* -> deploy/*)
+        SKIP_PREFIXES="${{ inputs.skip-prefixes }}"
+        SKIP_REGEX="^($(echo "$SKIP_PREFIXES" | tr ',' '|'))/"
+        if [[ "$BRANCH" =~ $SKIP_REGEX ]]; then
+          echo "Skipping validation — '$BRANCH' is a controlled promotion branch"
+          exit 0
+        fi
+
+        # Validate developer branch naming convention
+        PREFIXES="${{ inputs.allowed-prefixes }}"
+        REGEX="^($(echo "$PREFIXES" | tr ',' '|'))/"
+
+        if [[ "$BRANCH" =~ $REGEX ]]; then
+          echo "✅ Branch name '$BRANCH' follows naming convention"
+        else
+          echo "::error::Branch name '$BRANCH' does not follow the required naming convention."
+          echo "::error::Allowed prefixes: $(echo "$PREFIXES" | tr ',' ' | ')/"
+          echo "::error::Please rename your branch and re-open the PR."
+          exit 1
+        fi
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 2: Validate PR Size
+    # Checks total files changed and lines (added + deleted) across the full PR.
+    # Set max-files and max-lines inputs to 0 to disable this check.
+    # Add the label defined in size-exempt-label to bypass for a specific PR.
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: Validate PR Size
+      if: github.event_name == 'pull_request'
+      shell: bash
+      run: |
+        MAX_FILES="${{ inputs.max-files }}"
+        MAX_LINES="${{ inputs.max-lines }}"
+        EXEMPT_LABEL="${{ inputs.size-exempt-label }}"
+
+        # If both limits are 0, skip the check entirely
+        if [ "$MAX_FILES" = "0" ] && [ "$MAX_LINES" = "0" ]; then
+          echo "PR size check is disabled (max-files=0, max-lines=0)"
+          exit 0
+        fi
+
+        # Check for exempt label
+        PR_LABELS='${{ toJson(github.event.pull_request.labels.*.name) }}'
+        if echo "$PR_LABELS" | jq -e --arg label "$EXEMPT_LABEL" '. | index($label) != null' > /dev/null 2>&1; then
+          echo "⏭️ PR has '$EXEMPT_LABEL' label — skipping size check"
+          exit 0
+        fi
+
+        # Fetch base branch to calculate full PR diff (cumulative — total of all commits in PR)
+        git fetch origin "${{ github.base_ref }}" --quiet
+
+        # Count files changed in the full PR
+        FILES_CHANGED=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD" | wc -l | tr -d ' ')
+
+        # Count lines added and deleted in the full PR
+        DIFF_STAT=$(git diff --shortstat "origin/${{ github.base_ref }}...HEAD")
+        LINES_ADDED=$(echo "$DIFF_STAT" | grep -oP '\d+(?= insertion)' || echo "0")
+        LINES_DELETED=$(echo "$DIFF_STAT" | grep -oP '\d+(?= deletion)' || echo "0")
+        TOTAL_LINES=$((LINES_ADDED + LINES_DELETED))
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "📏 PR Size Check"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Files changed : $FILES_CHANGED $([ "$MAX_FILES" != "0" ] && echo "(limit: $MAX_FILES)" || echo "(no limit)")"
+        echo "Lines added   : $LINES_ADDED"
+        echo "Lines deleted : $LINES_DELETED"
+        echo "Total lines   : $TOTAL_LINES $([ "$MAX_LINES" != "0" ] && echo "(limit: $MAX_LINES)" || echo "(no limit)")"
+        echo ""
+
+        FAILED=false
+
+        if [ "$MAX_FILES" != "0" ] && [ "$FILES_CHANGED" -gt "$MAX_FILES" ]; then
+          echo "::error::PR exceeds file limit: $FILES_CHANGED files changed (max: $MAX_FILES). Split this PR into smaller pieces."
+          FAILED=true
+        fi
+
+        if [ "$MAX_LINES" != "0" ] && [ "$TOTAL_LINES" -gt "$MAX_LINES" ]; then
+          echo "::error::PR exceeds line limit: $TOTAL_LINES lines changed (max: $MAX_LINES). Split this PR into smaller pieces."
+          FAILED=true
+        fi
+
+        if [ "$FAILED" = "true" ]; then
+          echo ""
+          echo "To bypass size limits for this PR, add the '$EXEMPT_LABEL' label."
+          exit 1
+        fi
+
+        echo "✅ PR size is within limits"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # ADD FUTURE STEPS BELOW THIS LINE
+    # All repos calling this action will automatically pick up new steps.
+    # No changes needed in individual repo pipelines.
+    # ─────────────────────────────────────────────────────────────────────────
