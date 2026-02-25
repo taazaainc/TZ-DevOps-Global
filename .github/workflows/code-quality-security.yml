@@ -20,11 +20,19 @@ on:
         type: string
       dotnet_container_image:
         description: >
-          Docker image used as the job container for .NET scanning and Trivy builds.
+          Docker image for the job container (.NET scanning + Trivy builds).
           Must have dotnet SDK, sonar-scanner, docker CLI available.
-          Passed as input (not secret) because GitHub does not allow secrets context in container.image
-          or in with: of a reusable workflow call. The caller should store this as a repo variable
-          (vars.DOTNET_CONTAINER_IMAGE) and pass it via with:.
+          Must be an input (not secret) — GitHub disallows secrets context in
+          container.image and in with: of reusable workflow calls.
+          Store as a repo variable (vars.DOTNET_CONTAINER_IMAGE) in the caller.
+        required: true
+        type: string
+      sonar_nodejs_image:
+        description: >
+          Docker image used to run SonarQube analysis for Node.js/UI services.
+          Must be an input (not secret) — GitHub disallows secrets context in
+          with: of reusable workflow calls.
+          Store as a repo variable (vars.SONAR_NODEJS_IMAGE) in the caller.
         required: true
         type: string
     secrets:
@@ -39,11 +47,6 @@ on:
         required: true
       TCR_PASSWORD:
         description: Container registry password
-        required: true
-      SONAR_NODEJS_IMAGE:
-        description: >
-          Docker image used to run SonarQube analysis for Node.js/UI services.
-          Passed as secret to avoid exposing internal registry URLs in public repo.
         required: true
 
 jobs:
@@ -68,7 +71,7 @@ jobs:
       GITHUB_WORKSPACE_DIR: ${{ github.workspace }}
       TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
       TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
-      SONAR_NODEJS_IMAGE: ${{ secrets.SONAR_NODEJS_IMAGE }}
+      SONAR_NODEJS_IMAGE: ${{ inputs.sonar_nodejs_image }}
 
     container:
       image: ${{ inputs.dotnet_container_image }}
