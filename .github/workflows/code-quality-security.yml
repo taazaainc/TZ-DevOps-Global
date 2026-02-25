@@ -22,8 +22,9 @@ on:
         description: >
           Docker image used as the job container for .NET scanning and Trivy builds.
           Must have dotnet SDK, sonar-scanner, docker CLI available.
-          Passed as input (not secret) because GitHub does not allow secrets in container.image.
-          The caller should read this from a repo secret and pass it via with:.
+          Passed as input (not secret) because GitHub does not allow secrets context in container.image
+          or in with: of a reusable workflow call. The caller should store this as a repo variable
+          (vars.DOTNET_CONTAINER_IMAGE) and pass it via with:.
         required: true
         type: string
     secrets:
