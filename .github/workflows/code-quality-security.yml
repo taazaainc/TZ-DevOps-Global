@@ -1,0 +1,273 @@
+name: Code Quality & Security
+
+on:
+  workflow_call:
+    inputs:
+      runner:
+        description: >
+          JSON array of runner labels, e.g. '["self-hosted","linux","your-runner-label"]'.
+          Must match the self-hosted runner labels in the calling repository.
+        required: false
+        default: '["self-hosted"]'
+        type: string
+      changed_services:
+        description: >
+          JSON array of service objects to scan. Pass the output from check-for-changes.
+          Example: '[{"name":"Assessment","sonar_key":"...","project_path":"..."}]'
+        required: true
+        type: string
+    secrets:
+      SONAR_TOKEN:
+        description: SonarQube authentication token
+        required: true
+      SONAR_HOST_URL:
+        description: SonarQube server URL
+        required: true
+      TCR_USERNAME:
+        description: Container registry username
+        required: true
+      TCR_PASSWORD:
+        description: Container registry password
+        required: true
+      DOTNET_CONTAINER_IMAGE:
+        description: >
+          Docker image used as the job container for .NET scanning and Trivy builds.
+          Must have dotnet SDK, sonar-scanner, docker CLI available.
+          Passed as secret to avoid exposing internal registry URLs in public repo.
+        required: true
+      SONAR_NODEJS_IMAGE:
+        description: >
+          Docker image used to run SonarQube analysis for Node.js/UI services.
+          Passed as secret to avoid exposing internal registry URLs in public repo.
+        required: true
+
+jobs:
+  code-quality-security:
+    name: ${{ matrix.service.name }}-SCA & Security Scan
+    runs-on: ${{ fromJson(inputs.runner) }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        service: ${{ fromJson(inputs.changed_services) }}
+
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+      SONAR_PROJECT_KEY: ${{ matrix.service.sonar_key }}
+      MAIN_PROJECT_PATH: ${{ matrix.service.project_path }}
+      COMMON_LIB_PATHS: ${{ matrix.service.common_lib_paths }}
+      DOTNET_VERSION: ${{ matrix.service.dotnet_version }}
+      PROJECT_VERSION: "${{ github.head_ref }}-${{ github.run_number }}"
+      GITHUB_WORKSPACE_DIR: ${{ github.workspace }}
+      TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
+      TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
+      SONAR_NODEJS_IMAGE: ${{ secrets.SONAR_NODEJS_IMAGE }}
+
+    container:
+      image: ${{ secrets.DOTNET_CONTAINER_IMAGE }}
+      options: >-
+        --privileged
+        -v /var/run/docker.sock:/var/run/docker.sock
+      credentials:
+        username: ${{ secrets.TCR_USERNAME }}
+        password: ${{ secrets.TCR_PASSWORD }}
+
+    steps:
+      - name: Setup Docker permissions
+        run: |
+          if [ -S /var/run/docker.sock ]; then
+            chmod 666 /var/run/docker.sock
+          fi
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify Environment
+        run: |
+          echo "=== Environment Check ==="
+          echo "Service: ${{ matrix.service.name }}"
+          echo "Project Path: $MAIN_PROJECT_PATH"
+          echo ".NET Version: $DOTNET_VERSION"
+          echo "SonarQube Project: $SONAR_PROJECT_KEY"
+          echo ""
+          echo "Available .NET SDKs:"
+          dotnet --list-sdks
+          echo ""
+          echo "Installed Tools:"
+          dotnet tool list --global
+          echo ""
+
+      # .NET Service Scanning (all services except UI with scanner_type: 'nodejs')
+      - name: Add Missing Test Packages
+        if: ${{ !matrix.service.scanner_type }}
+        run: bash /scripts/add-missing-packages.sh
+
+      - name: Run SonarQube Build, Test & Analysis
+        if: ${{ !matrix.service.scanner_type }}
+        run: bash /scripts/dotnet-build-test-sonarqube.sh
+
+      - name: Wait for SonarQube Processing
+        if: ${{ !matrix.service.scanner_type }}
+        run: sleep 30
+
+      - name: SonarQube Quality Gate Check
+        if: ${{ !matrix.service.scanner_type }}
+        run: |
+          max_attempts=30
+          attempt=0
+
+          while [ $attempt -lt $max_attempts ]; do
+            response=$(curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}")
+            status=$(echo "$response" | jq -r '.projectStatus.status' 2>/dev/null || echo "PARSE_ERROR")
+
+            if [ "$status" = "PARSE_ERROR" ]; then
+              echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
+              sleep 10
+              attempt=$((attempt+1))
+              continue
+            fi
+
+            if [ "$status" != "NONE" ] && [ "$status" != "null" ]; then
+              echo "Quality Gate Status: $status"
+              if [ "$status" = "OK" ]; then
+                echo "✅ Quality Gate Passed!"
+                exit 0
+              elif [ "$status" = "ERROR" ]; then
+                echo "❌ Quality Gate Failed!"
+                echo "Details: $response"
+                exit 1
+              fi
+            fi
+
+            echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
+            sleep 10
+            attempt=$((attempt+1))
+          done
+
+          echo "⚠️ Quality Gate check timeout"
+          exit 1
+
+      # Node.js Scanning only for UI service (scanner_type: 'nodejs')
+      - name: SonarQube Scan for Node.js/UI
+        if: ${{ matrix.service.scanner_type == 'nodejs' }}
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+            -e SONAR_TOKEN="$SONAR_TOKEN" \
+            -e EXTRA_ARGS="-Dsonar.projectKey=${{ matrix.service.sonar_key }} \
+                          -Dsonar.projectName=${{ matrix.service.sonar_key }} \
+                          -Dsonar.sources=src/UI \
+                          -Dsonar.projectVersion=${{ github.head_ref || github.ref_name }}-${{ github.run_number }} \
+                          -Dsonar.verbose=true" \
+            -v "${{ github.workspace }}:/usr/src" \
+            $SONAR_NODEJS_IMAGE
+
+      - name: Wait for SonarQube Processing (Node.js)
+        if: ${{ matrix.service.scanner_type == 'nodejs' }}
+        run: sleep 30
+
+      - name: SonarQube Quality Gate Check (Node.js)
+        if: ${{ matrix.service.scanner_type == 'nodejs' }}
+        run: |
+          max_attempts=30
+          attempt=0
+
+          while [ $attempt -lt $max_attempts ]; do
+            response=$(curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}")
+            status=$(echo "$response" | jq -r '.projectStatus.status' 2>/dev/null || echo "PARSE_ERROR")
+
+            if [ "$status" = "PARSE_ERROR" ]; then
+              echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
+              sleep 10
+              attempt=$((attempt+1))
+              continue
+            fi
+
+            if [ "$status" != "NONE" ] && [ "$status" != "null" ]; then
+              echo "Quality Gate Status: $status"
+              if [ "$status" = "OK" ]; then
+                echo "✅ Quality Gate Passed!"
+                exit 0
+              elif [ "$status" = "ERROR" ]; then
+                echo "❌ Quality Gate Failed!"
+                echo "Details: $response"
+                exit 1
+              fi
+            fi
+
+            echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
+            sleep 10
+            attempt=$((attempt+1))
+          done
+
+          echo "⚠️ Quality Gate check timeout"
+          exit 1
+
+      - name: Docker Build for Trivy Scan
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE_DIR
+          export IMAGE_TAG=test-${{ github.run_number }}
+          export IMAGE_NAME=${{ matrix.service.image_name }}
+
+          echo "Building Docker image: $IMAGE_NAME:$IMAGE_TAG"
+
+          # Construct build command with arguments
+          BUILD_CMD="docker build -t $IMAGE_NAME:$IMAGE_TAG"
+          BUILD_CMD="$BUILD_CMD -f ${{ matrix.service.dockerfile }}"
+
+          # Add build arguments if they exist
+          if jq -e '.build_args' <<< '${{ toJson(matrix.service) }}' > /dev/null 2>&1; then
+            for key in $(jq -r '.build_args[]' <<< '${{ toJson(matrix.service) }}'); do
+              value=$(jq -r --arg k "$key" '.build_arg_values[$k].qa // .build_arg_values[$k].dev // ""' <<< '${{ toJson(matrix.service) }}')
+              if [ -n "$value" ]; then
+                BUILD_CMD="$BUILD_CMD --build-arg $key=\"$value\""
+              fi
+            done
+          fi
+
+          BUILD_CMD="$BUILD_CMD ${{ matrix.service.context_path }}"
+
+          echo "Executing: $BUILD_CMD"
+          eval "$BUILD_CMD"
+          docker tag $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
+
+      - name: Trivy Security Scan
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/trivy-scan@master
+        with:
+          image-name: ${{ matrix.service.image_name }}:test-${{ github.run_number }}
+          service-name: ${{ matrix.service.name }}
+
+      - name: GitLeaks Secret Scanning
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/gitleaks-scan@master
+        with:
+          service-name: ${{ matrix.service.name }}
+
+      - name: Cleanup Docker Images
+        if: always()
+        run: |
+          IMAGE_TAG=test-${{ github.run_number }}
+          IMAGE_NAME=${{ matrix.service.image_name }}
+
+          echo "Cleaning up images for this job only..."
+          docker rmi "${IMAGE_NAME}:${IMAGE_TAG}" 2>/dev/null || echo "Image ${IMAGE_NAME}:${IMAGE_TAG} already removed"
+          docker rmi "${IMAGE_NAME}:latest" 2>/dev/null || echo "Image ${IMAGE_NAME}:latest already removed"
+
+          echo "Cleanup complete"
+
+      - name: Cleanup root-owned workspace artifacts
+        if: always()
+        run: |
+          # This step runs inside the container (as root), so it can remove root-owned
+          # bin/obj/TestResults directories left by dotnet build/test.
+          # Without this, the next job's actions/checkout@v4 (which runs as the bare runner user)
+          # will fail with EACCES when git clean tries to delete these root-owned files.
+          echo "Removing root-owned build artifacts from workspace..."
+          find "$GITHUB_WORKSPACE" -name "bin" -type d -exec rm -rf {} + 2>/dev/null || true
+          find "$GITHUB_WORKSPACE" -name "obj" -type d -exec rm -rf {} + 2>/dev/null || true
+          find "$GITHUB_WORKSPACE" -name "TestResults" -type d -exec rm -rf {} + 2>/dev/null || true
+          echo "Workspace artifact cleanup complete"
