@@ -18,6 +18,14 @@ on:
         required: false
         default: '[]'
         type: string
+      dotnet_container_image:
+        description: >
+          Docker image used as the job container for .NET scanning and Trivy builds.
+          Must have dotnet SDK, sonar-scanner, docker CLI available.
+          Passed as input (not secret) because GitHub does not allow secrets in container.image.
+          The caller should read this from a repo secret and pass it via with:.
+        required: true
+        type: string
     secrets:
       SONAR_TOKEN:
         description: SonarQube authentication token
@@ -30,12 +38,6 @@ on:
         required: true
       TCR_PASSWORD:
         description: Container registry password
-        required: true
-      DOTNET_CONTAINER_IMAGE:
-        description: >
-          Docker image used as the job container for .NET scanning and Trivy builds.
-          Must have dotnet SDK, sonar-scanner, docker CLI available.
-          Passed as secret to avoid exposing internal registry URLs in public repo.
         required: true
       SONAR_NODEJS_IMAGE:
         description: >
@@ -68,7 +70,7 @@ jobs:
       SONAR_NODEJS_IMAGE: ${{ secrets.SONAR_NODEJS_IMAGE }}
 
     container:
-      image: ${{ secrets.DOTNET_CONTAINER_IMAGE }}
+      image: ${{ inputs.dotnet_container_image }}
       options: >-
         --privileged
         -v /var/run/docker.sock:/var/run/docker.sock
