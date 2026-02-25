@@ -250,6 +250,8 @@ jobs:
         with:
           image-name: ${{ matrix.service.image_name }}:test-${{ github.run_number }}
           service-name: ${{ matrix.service.name }}
+          registry-username: ${{ secrets.TCR_USERNAME }}
+          registry-password: ${{ secrets.TCR_PASSWORD }}
 
       - name: GitLeaks Secret Scanning
         uses: taazaainc/TZ-DevOps-Global/.github/actions/gitleaks-scan@master

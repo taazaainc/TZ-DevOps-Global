@@ -19,6 +19,24 @@ inputs:
     description: Set to 'true' to fail the pipeline when CRITICAL vulnerabilities are found
     required: false
     default: "false"
+  trivy-image:
+    description: >
+      Trivy Docker image to use for scanning. Override to use a private registry mirror
+      to avoid Docker Hub rate limits (e.g. tcr.taazaa.cloud/devops-shared/trivy:latest).
+    required: false
+    default: "tcr.taazaa.cloud/devops-shared/trivy:latest"
+  registry:
+    description: Container registry hostname to login to before pulling trivy image
+    required: false
+    default: "tcr.taazaa.cloud"
+  registry-username:
+    description: Username for the container registry (to pull trivy image)
+    required: false
+    default: ""
+  registry-password:
+    description: Password for the container registry (to pull trivy image)
+    required: false
+    default: ""
 
 outputs:
   critical-count:
@@ -31,6 +49,16 @@ outputs:
 runs:
   using: composite
   steps:
+    - name: Login to container registry
+      shell: bash
+      run: |
+        if [ -n "${{ inputs.registry-username }}" ] && [ -n "${{ inputs.registry-password }}" ]; then
+          echo "${{ inputs.registry-password }}" | docker login "${{ inputs.registry }}" -u "${{ inputs.registry-username }}" --password-stdin
+          echo "Logged in to ${{ inputs.registry }}"
+        else
+          echo "No registry credentials provided — skipping login (using cached auth)"
+        fi
+
     - name: Trivy Security Scan
       id: scan
       shell: bash
@@ -38,13 +66,15 @@ runs:
         SERVICE_NAME_SAFE=$(echo "${{ inputs.service-name }}" | tr ' ' '-' | tr '/' '-')
         TRIVY_REPORT="/tmp/trivy-report-${SERVICE_NAME_SAFE}.json"
         IMAGE="${{ inputs.image-name }}"
+        TRIVY_IMAGE="${{ inputs.trivy-image }}"
 
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo "🔍 Trivy Security Scan"
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "Image:    $IMAGE"
-        echo "Service:  ${{ inputs.service-name }}"
-        echo "Severity: ${{ inputs.severity }}"
+        echo "Image:       $IMAGE"
+        echo "Service:     ${{ inputs.service-name }}"
+        echo "Severity:    ${{ inputs.severity }}"
+        echo "Trivy image: $TRIVY_IMAGE"
         echo ""
 
         rm -f "$TRIVY_REPORT"
@@ -52,7 +82,7 @@ runs:
         echo "Generating JSON vulnerability report..."
         docker run --rm \
           -v /var/run/docker.sock:/var/run/docker.sock \
-          aquasec/trivy:latest image \
+          "$TRIVY_IMAGE" image \
           --format json \
           --ignore-unfixed \
           --severity "${{ inputs.severity }}" \
@@ -81,7 +111,7 @@ runs:
         echo "Detailed Scan Results (CRITICAL & HIGH only):"
         docker run --rm \
           -v /var/run/docker.sock:/var/run/docker.sock \
-          aquasec/trivy:latest image \
+          "$TRIVY_IMAGE" image \
           --format table \
           --exit-code 0 \
           --ignore-unfixed \
