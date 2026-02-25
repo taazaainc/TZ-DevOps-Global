@@ -16,19 +16,6 @@ on:
           Example: '[{"name":"Assessment","sonar_key":"...","project_path":"..."}]'
         required: true
         type: string
-      dotnet-container-image:
-        description: >
-          Docker image used as the job container for .NET scanning and Trivy builds.
-          Must have dotnet SDK, sonar-scanner, docker CLI available.
-        required: false
-        default: "tcr.taazaa.cloud/devops-shared/gh-dotnet-multi:latest"
-        type: string
-      sonar-nodejs-image:
-        description: >
-          Docker image used to run SonarQube analysis for Node.js/UI services.
-        required: false
-        default: "tcr.taazaa.cloud/shared/sonarqube-scan-nodejs-gh:1.0.0"
-        type: string
     secrets:
       SONAR_TOKEN:
         description: SonarQube authentication token
@@ -41,6 +28,17 @@ on:
         required: true
       TCR_PASSWORD:
         description: Container registry password
+        required: true
+      DOTNET_CONTAINER_IMAGE:
+        description: >
+          Docker image used as the job container for .NET scanning and Trivy builds.
+          Must have dotnet SDK, sonar-scanner, docker CLI available.
+          Passed as secret to avoid exposing internal registry URLs in public repo.
+        required: true
+      SONAR_NODEJS_IMAGE:
+        description: >
+          Docker image used to run SonarQube analysis for Node.js/UI services.
+          Passed as secret to avoid exposing internal registry URLs in public repo.
         required: true
 
 jobs:
@@ -64,10 +62,10 @@ jobs:
       GITHUB_WORKSPACE_DIR: ${{ github.workspace }}
       TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
       TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
-      SONAR_NODEJS_IMAGE: ${{ inputs.sonar-nodejs-image }}
+      SONAR_NODEJS_IMAGE: ${{ secrets.SONAR_NODEJS_IMAGE }}
 
     container:
-      image: ${{ inputs.dotnet-container-image }}
+      image: ${{ secrets.DOTNET_CONTAINER_IMAGE }}
       options: >-
         --privileged
         -v /var/run/docker.sock:/var/run/docker.sock
