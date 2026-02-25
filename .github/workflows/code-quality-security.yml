@@ -14,7 +14,9 @@ on:
         description: >
           JSON array of service objects to scan. Pass the output from check-for-changes.
           Example: '[{"name":"Assessment","sonar_key":"...","project_path":"..."}]'
-        required: true
+          Pass '[]' or omit to skip scanning entirely.
+        required: false
+        default: '[]'
         type: string
     secrets:
       SONAR_TOKEN:
@@ -45,6 +47,7 @@ jobs:
   code-quality-security:
     name: ${{ matrix.service.name }}-SCA & Security Scan
     runs-on: ${{ fromJson(inputs.runner) }}
+    if: inputs.changed_services != '[]'
 
     strategy:
       fail-fast: false
