@@ -280,3 +280,59 @@ jobs:
           find "$GITHUB_WORKSPACE" -name "obj" -type d -exec rm -rf {} + 2>/dev/null || true
           find "$GITHUB_WORKSPACE" -name "TestResults" -type d -exec rm -rf {} + 2>/dev/null || true
           echo "Workspace artifact cleanup complete"
+
+  scan-summary:
+    name: Scan Summary
+    runs-on: ${{ fromJson(inputs.runner) }}
+    needs: [code-quality-security]
+    if: always()
+    steps:
+      - name: Report scan results
+        run: |
+          RESULT="${{ needs.code-quality-security.result }}"
+          SERVICES='${{ inputs.changed_services }}'
+
+          echo "=================================================="
+          echo "           CODE QUALITY & SECURITY SUMMARY        "
+          echo "=================================================="
+          echo ""
+
+          if [ "$RESULT" = "skipped" ]; then
+            echo "⏭️  No services changed — scan skipped."
+            echo ""
+            echo "Result: SKIPPED (no changed services detected)"
+            exit 0
+          fi
+
+          # Parse service names from the JSON input
+          SERVICE_NAMES=$(echo "$SERVICES" | jq -r '.[].name' 2>/dev/null || echo "")
+
+          if [ "$RESULT" = "success" ]; then
+            echo "✅ All scanned services PASSED"
+            echo ""
+            echo "Services scanned:"
+            while IFS= read -r svc; do
+              [ -n "$svc" ] && echo "  ✅ $svc"
+            done <<< "$SERVICE_NAMES"
+            echo ""
+            echo "Result: ALL PASSED — merge is allowed."
+            exit 0
+          elif [ "$RESULT" = "failure" ]; then
+            echo "❌ One or more service scans FAILED"
+            echo ""
+            echo "Services scanned (check individual jobs for which failed):"
+            while IFS= read -r svc; do
+              [ -n "$svc" ] && echo "  ⚠️  $svc"
+            done <<< "$SERVICE_NAMES"
+            echo ""
+            echo "Result: FAILED — merge is blocked. Fix the failing service scan(s) above."
+            exit 1
+          else
+            echo "⚠️  Unexpected scan result: $RESULT"
+            echo ""
+            echo "Services that were queued:"
+            while IFS= read -r svc; do
+              [ -n "$svc" ] && echo "  ⚠️  $svc"
+            done <<< "$SERVICE_NAMES"
+            exit 1
+          fi
