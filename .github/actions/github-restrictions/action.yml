@@ -95,9 +95,21 @@ runs:
           exit 0
         fi
 
-        git fetch origin "${{ github.base_ref }}" --quiet
-
-        CHANGED_FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+        # Use GitHub REST API to list PR files — no git checkout or fetch needed.
+        # Composite actions run without a workspace checkout, so git commands are unavailable.
+        # The API returns up to 3000 files (paginated); 300 per page × 10 pages covers all real PRs.
+        CHANGED_FILES=""
+        PAGE=1
+        while true; do
+          BATCH=$(curl -s \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files?per_page=100&page=$PAGE" \
+            | jq -r '.[].filename')
+          [ -z "$BATCH" ] && break
+          CHANGED_FILES="${CHANGED_FILES}"$'\n'"${BATCH}"
+          PAGE=$((PAGE+1))
+        done
 
         # Patterns that must never appear in a PR
         FORBIDDEN_PATTERNS=(
