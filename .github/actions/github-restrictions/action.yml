@@ -4,7 +4,8 @@ description: >
   Add new checks here — all repos that call this action inherit them automatically.
   Currently enforces:
     1. Branch naming convention
-    2. PR size limits (files changed + lines added)
+    2. Forbidden files/folders (build artifacts, secrets, IDE folders, OS files)
+    3. PR size limits (files changed + lines added)
 
 inputs:
   allowed-prefixes:
@@ -75,7 +76,92 @@ runs:
         fi
 
     # ─────────────────────────────────────────────────────────────────────────
-    # STEP 2: Validate PR Size
+    # STEP 2: Detect Forbidden Files
+    # Blocks PRs that include build artifacts, secrets, IDE folders, or other
+    # files that must never be committed to source control.
+    # Runs against the full PR diff (all commits vs base branch).
+    # ─────────────────────────────────────────────────────────────────────────
+    - name: Detect Forbidden Files
+      if: github.event_name == 'pull_request'
+      shell: bash
+      run: |
+        BRANCH="${{ github.head_ref }}"
+
+        # Skip for controlled promotion branches
+        SKIP_PREFIXES="${{ inputs.skip-prefixes }}"
+        SKIP_REGEX="^($(echo "$SKIP_PREFIXES" | tr ',' '|'))/"
+        if [[ "$BRANCH" =~ $SKIP_REGEX ]]; then
+          echo "Skipping forbidden file check — '$BRANCH' is a controlled promotion branch"
+          exit 0
+        fi
+
+        git fetch origin "${{ github.base_ref }}" --quiet
+
+        CHANGED_FILES=$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")
+
+        # Patterns that must never appear in a PR
+        FORBIDDEN_PATTERNS=(
+          "^bin/"
+          "^obj/"
+          "^logs?/"
+          "^node_modules/"
+          "^vendor/"
+          "^dist/"
+          "^build/"
+          "^target/"
+          "^out/"
+          "^tmp/"
+          "^temp/"
+          "^cache/"
+          "^__pycache__/"
+          "^\.idea/"
+          "^\.vscode/"
+          "\.DS_Store$"
+          "Thumbs\.db$"
+          "\.log$"
+          "\.class$"
+          "\.pyc$"
+          "\.pem$"
+          "\.key$"
+          "^\.env"
+          "\.env\."
+        )
+
+        VIOLATIONS=""
+        for pattern in "${FORBIDDEN_PATTERNS[@]}"; do
+          MATCHES=$(echo "$CHANGED_FILES" | grep -E "$pattern" || true)
+          if [[ -n "$MATCHES" ]]; then
+            VIOLATIONS+="$MATCHES"$'\n'
+          fi
+        done
+
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "🚫 Forbidden File Check"
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+        if [[ -n "$VIOLATIONS" ]]; then
+          echo "::error::Forbidden files detected in this PR:"
+          echo "$VIOLATIONS" | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::error::  $line"
+          done
+          echo ""
+          echo "These file types must not be committed:"
+          echo "  Build artifacts : bin/, obj/, dist/, build/, target/, out/"
+          echo "  Dependencies    : node_modules/, vendor/"
+          echo "  Temp/cache      : tmp/, temp/, cache/, logs/, __pycache__/"
+          echo "  IDE folders     : .idea/, .vscode/"
+          echo "  OS files        : .DS_Store, Thumbs.db"
+          echo "  Secrets         : .env, .env.*, *.pem, *.key"
+          echo "  Compiled files  : *.class, *.pyc, *.log"
+          echo ""
+          echo "Add these patterns to your .gitignore and remove them from git tracking."
+          exit 1
+        fi
+
+        echo "✅ No forbidden files detected"
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # STEP 3: Validate PR Size
     # Checks total files changed and lines (added + deleted) across the full PR.
     # Set max-files and max-lines inputs to 0 to disable this check.
     # Add the label defined in size-exempt-label to bypass for a specific PR.
