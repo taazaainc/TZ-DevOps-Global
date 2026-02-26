@@ -148,7 +148,25 @@ Reference actions using `taazaainc/TZ-DevOps-Global/.github/actions/<action-name
 
 ### github-restrictions
 
-Centralized PR gate. Enforces branch naming convention and optional PR size limits. Add new checks here — all repos that call this action inherit them automatically.
+Centralized PR gate. Enforces branch naming convention, forbidden file detection, and optional PR size limits. Add new checks here — all repos that call this action inherit them automatically.
+
+**Checks (in order):**
+
+1. **Branch naming** — validates `head_ref` against allowed prefixes
+2. **Forbidden files** — blocks PRs containing build artifacts, secrets, IDE folders, OS junk, or compiled files (see list below)
+3. **PR size** — optionally enforces max files changed and max lines changed
+
+**Forbidden file patterns detected:**
+
+| Category | Patterns |
+|----------|----------|
+| Build artifacts | `bin/`, `obj/`, `dist/`, `build/`, `target/`, `out/` |
+| Dependencies | `node_modules/`, `vendor/` |
+| Temp / cache | `tmp/`, `temp/`, `cache/`, `logs/`, `__pycache__/` |
+| IDE folders | `.idea/`, `.vscode/` |
+| OS files | `.DS_Store`, `Thumbs.db` |
+| Secrets | `.env`, `.env.*`, `*.pem`, `*.key` |
+| Compiled files | `*.class`, `*.pyc`, `*.log` |
 
 **Inputs:**
 
