@@ -6,7 +6,7 @@ description: >
 
 inputs:
   image-name:
-    description: Full image name including tag (e.g. tcr.taazaa.cloud/contacthealth-dev/assessment:test-42)
+    description: Full image name including tag (e.g. myregistry.example.com/myproject/myservice:test-42)
     required: true
   service-name:
     description: Service name used for artifact naming
@@ -21,14 +21,18 @@ inputs:
     default: "false"
   trivy-image:
     description: >
-      Trivy Docker image to use for scanning. Override to use a private registry mirror
-      to avoid Docker Hub rate limits (e.g. tcr.taazaa.cloud/devops-shared/trivy:latest).
+      Trivy Docker image to use for scanning.
+      Use a private registry mirror to avoid Docker Hub rate limits.
+      Example: myregistry.example.com/devops-shared/trivy:latest
+      Falls back to aquasec/trivy:latest from Docker Hub if not provided.
     required: false
-    default: "tcr.taazaa.cloud/devops-shared/trivy:latest"
+    default: "aquasec/trivy:latest"
   registry:
-    description: Container registry hostname to login to before pulling trivy image
+    description: >
+      Container registry hostname to login to before pulling trivy image.
+      Only used when registry-username and registry-password are provided.
     required: false
-    default: "tcr.taazaa.cloud"
+    default: ""
   registry-username:
     description: Username for the container registry (to pull trivy image)
     required: false
@@ -53,10 +57,15 @@ runs:
       shell: bash
       run: |
         if [ -n "${{ inputs.registry-username }}" ] && [ -n "${{ inputs.registry-password }}" ]; then
-          echo "${{ inputs.registry-password }}" | docker login "${{ inputs.registry }}" -u "${{ inputs.registry-username }}" --password-stdin
-          echo "Logged in to ${{ inputs.registry }}"
+          # Derive registry hostname from trivy-image if registry input is not explicitly set
+          REGISTRY="${{ inputs.registry }}"
+          if [ -z "$REGISTRY" ]; then
+            REGISTRY=$(echo "${{ inputs.trivy-image }}" | cut -d'/' -f1)
+          fi
+          echo "${{ inputs.registry-password }}" | docker login "$REGISTRY" -u "${{ inputs.registry-username }}" --password-stdin
+          echo "Logged in to $REGISTRY"
         else
-          echo "No registry credentials provided — skipping login (using cached auth)"
+          echo "No registry credentials provided — skipping login (using cached auth or Docker Hub)"
         fi
 
     - name: Trivy Security Scan
