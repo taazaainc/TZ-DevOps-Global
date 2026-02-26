@@ -35,6 +35,16 @@ on:
           Store as a repo variable (vars.SONAR_NODEJS_IMAGE) in the caller.
         required: true
         type: string
+      trivy_image:
+        description: >
+          Trivy Docker image to use for container scanning.
+          Override with a private registry mirror to avoid Docker Hub rate limits.
+          Example: myregistry.example.com/devops-shared/trivy:latest
+          Store as a repo variable (vars.TRIVY_IMAGE) in the caller.
+          Defaults to aquasec/trivy:latest (Docker Hub) if not provided.
+        required: false
+        default: "aquasec/trivy:latest"
+        type: string
     secrets:
       SONAR_TOKEN:
         description: SonarQube authentication token
@@ -250,6 +260,7 @@ jobs:
         with:
           image-name: ${{ matrix.service.image_name }}:test-${{ github.run_number }}
           service-name: ${{ matrix.service.name }}
+          trivy-image: ${{ inputs.trivy_image }}
           registry-username: ${{ secrets.TCR_USERNAME }}
           registry-password: ${{ secrets.TCR_PASSWORD }}
 
