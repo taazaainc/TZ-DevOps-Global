@@ -250,6 +250,7 @@ jobs:
         with:
           image-name: ${{ matrix.service.image_name }}:test-${{ github.run_number }}
           service-name: ${{ matrix.service.name }}
+          trivy-image: ${{ vars.TRIVY_IMAGE || 'aquasec/trivy:latest' }}
           registry-username: ${{ secrets.TCR_USERNAME }}
           registry-password: ${{ secrets.TCR_PASSWORD }}
 
