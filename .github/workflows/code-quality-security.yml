@@ -320,6 +320,8 @@ jobs:
     if: always()
     steps:
       - name: Report scan results
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           RESULT="${{ needs.code-quality-security.result }}"
           SERVICES='${{ inputs.changed_services }}'
@@ -354,7 +356,7 @@ jobs:
             echo ""
 
             # Query this run's jobs via API to get per-job conclusions
-            RUN_JOBS=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            RUN_JOBS=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
               | jq -r '.jobs[] | "\(.name)|\(.conclusion)"' 2>/dev/null || echo "")
 
