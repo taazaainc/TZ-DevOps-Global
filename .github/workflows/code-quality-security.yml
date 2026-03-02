@@ -272,9 +272,10 @@ jobs:
           registry-username: ${{ secrets.TCR_USERNAME }}
           registry-password: ${{ secrets.TCR_PASSWORD }}
           # ── Centralized control ─────────────────────────────────────────────
-          # Change 'true' → 'false' here to disable org-wide without touching any caller repo.
-          # Callers can also override per-repo via the fail-on-critical input.
-          fail-on-critical: "true"
+          # Org-wide default is 'true' — pipeline blocks on CRITICAL CVEs.
+          # To disable org-wide: change the default in the input declaration above (line ~44).
+          # To bypass for one specific repo: that repo passes fail-on-critical: 'false' in its caller.
+          fail-on-critical: ${{ inputs.fail-on-critical || 'true' }}
 
       - name: GitLeaks Secret Scanning
         if: always()
@@ -282,9 +283,10 @@ jobs:
         with:
           service-name: ${{ matrix.service.name }}
           # ── Centralized control ─────────────────────────────────────────────
-          # Change 'true' → 'false' here to disable org-wide without touching any caller repo.
-          # Callers can also override per-repo via the fail-on-secrets input.
-          fail-on-secrets: "true"
+          # Org-wide default is 'true' — pipeline blocks when secrets are detected.
+          # To disable org-wide: change the default in the input declaration above (line ~52).
+          # To bypass for one specific repo: that repo passes fail-on-secrets: 'false' in its caller.
+          fail-on-secrets: ${{ inputs.fail-on-secrets || 'true' }}
 
       - name: Cleanup Docker Images
         if: always()
