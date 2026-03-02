@@ -89,8 +89,8 @@ Runs SonarQube analysis, Trivy container scan, and GitLeaks secret scan for each
 | `changed_services` | No | JSON array from `check-for-changes` output. Pass `[]` to skip. |
 | `dotnet_container_image` | Yes | Docker image with .NET SDK + sonar-scanner. Store as `vars.DOTNET_CONTAINER_IMAGE` in caller. |
 | `sonar_nodejs_image` | Yes | Docker image for Node.js SonarQube scanning. Store as `vars.SONAR_NODEJS_IMAGE` in caller. |
-| `fail-on-critical` | No (`false`) | Set to `'true'` to fail the pipeline when Trivy finds CRITICAL vulnerabilities. |
-| `fail-on-secrets` | No (`false`) | Set to `'true'` to fail the pipeline when GitLeaks detects secrets in source code. |
+| `fail-on-critical` | No (`false`) | Per-repo override. Org-wide value is hardcoded in the workflow step — change it there to enable/disable for all repos at once. |
+| `fail-on-secrets` | No (`false`) | Per-repo override. Org-wide value is hardcoded in the workflow step — change it there to enable/disable for all repos at once. |
 
 **Secrets required:**
 
@@ -135,8 +135,8 @@ code-quality-security:
     changed_services: ${{ needs.github-restrictions.outputs.changed_services }}
     dotnet_container_image: ${{ vars.DOTNET_CONTAINER_IMAGE }}
     sonar_nodejs_image: ${{ vars.SONAR_NODEJS_IMAGE }}
-    # fail-on-critical: 'true'   # uncomment to block merge on CRITICAL CVEs
-    # fail-on-secrets: 'true'    # uncomment to block merge when secrets are detected
+    # fail-on-critical: 'false'  # override only if you need to bypass CRITICAL blocking for this repo
+    # fail-on-secrets: 'false'   # override only if you need to bypass secret detection blocking for this repo
   secrets:
     SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
