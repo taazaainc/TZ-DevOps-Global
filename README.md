@@ -9,7 +9,7 @@ Logic that is **identical across all repos** lives here — reference it from an
 
 | Type | Name | Path | Purpose |
 |------|------|------|---------|
-| Composite Action | `github-restrictions` | `.github/actions/github-restrictions` | PR gate: branch naming + PR size limits |
+| Composite Action | `github-restrictions` | `.github/actions/github-restrictions` | PR gate: branch naming + forbidden file detection + PR size limits |
 | Composite Action | `gitleaks-scan` | `.github/actions/gitleaks-scan` | Secret scanning via GitLeaks |
 | Composite Action | `trivy-scan` | `.github/actions/trivy-scan` | Container image vulnerability scan via Trivy |
 | Composite Action | `validate-branch` | `.github/actions/validate-branch` | Branch naming only (lightweight, use github-restrictions instead) |
@@ -89,8 +89,8 @@ Runs SonarQube analysis, Trivy container scan, and GitLeaks secret scan for each
 | `changed_services` | No | JSON array from `check-for-changes` output. Pass `[]` to skip. |
 | `dotnet_container_image` | Yes | Docker image with .NET SDK + sonar-scanner. Store as `vars.DOTNET_CONTAINER_IMAGE` in caller. |
 | `sonar_nodejs_image` | Yes | Docker image for Node.js SonarQube scanning. Store as `vars.SONAR_NODEJS_IMAGE` in caller. |
-| `fail-on-critical` | No (`false`) | Per-repo override. Org-wide value is hardcoded in the workflow step — change it there to enable/disable for all repos at once. |
-| `fail-on-secrets` | No (`false`) | Per-repo override. Org-wide value is hardcoded in the workflow step — change it there to enable/disable for all repos at once. |
+| `fail-on-critical` | No | Org default: `true` (blocking). Pass `'false'` from a specific repo's caller to bypass for that repo only. To disable org-wide: change the `inputs.fail-on-critical \|\| 'true'` default in this workflow. |
+| `fail-on-secrets` | No | Org default: `true` (blocking). Pass `'false'` from a specific repo's caller to bypass for that repo only. To disable org-wide: change the `inputs.fail-on-secrets \|\| 'true'` default in this workflow. |
 
 **Secrets required:**
 
