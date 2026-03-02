@@ -89,8 +89,8 @@ Runs SonarQube analysis, Trivy container scan, and GitLeaks secret scan for each
 | `changed_services` | No | JSON array from `check-for-changes` output. Pass `[]` to skip. |
 | `dotnet_container_image` | Yes | Docker image with .NET SDK + sonar-scanner. Store as `vars.DOTNET_CONTAINER_IMAGE` in caller. |
 | `sonar_nodejs_image` | Yes | Docker image for Node.js SonarQube scanning. Store as `vars.SONAR_NODEJS_IMAGE` in caller. |
-| `fail-on-critical` | No | Default `""` (empty) — org-wide default `'true'` is applied via `inputs.fail-on-critical \|\| 'true'` in the step. Pass `'false'` explicitly from a caller repo to bypass blocking for that repo only. |
-| `fail-on-secrets` | No | Default `""` (empty) — org-wide default `'true'` is applied via `inputs.fail-on-secrets \|\| 'true'` in the step. Pass `'false'` explicitly from a caller repo to bypass blocking for that repo only. |
+| `fail-on-critical` | No | Controls whether Trivy CRITICAL CVEs block the pipeline. See **Enabling / Disabling Trivy & GitLeaks blocking** below. |
+| `fail-on-secrets` | No | Controls whether GitLeaks secret findings block the pipeline. See **Enabling / Disabling Trivy & GitLeaks blocking** below. |
 
 **Secrets required:**
 
@@ -143,6 +143,39 @@ code-quality-security:
     TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
     TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
 ```
+
+**Enabling / Disabling Trivy & GitLeaks blocking:**
+
+The org-wide default for both is **blocking (`true`)**. There are two ways to change this:
+
+**Option A — Disable org-wide (affects ALL repos):**
+
+Edit `code-quality-security.yml` in this repo. Find these two lines and change `'true'` → `'false'`:
+
+```yaml
+# Line ~278 — Trivy
+fail-on-critical: ${{ inputs.fail-on-critical || 'true' }}
+
+# Line ~289 — GitLeaks
+fail-on-secrets: ${{ inputs.fail-on-secrets || 'true' }}
+```
+
+Effect: All repos stop being blocked by Trivy CRITICALs / GitLeaks secrets. Scans still run and upload reports, but pipeline does not fail.
+
+**Option B — Bypass for ONE specific repo only:**
+
+In that repo's caller workflow, pass the override explicitly under `with:`:
+
+```yaml
+code-quality-security:
+  uses: taazaainc/TZ-DevOps-Global/.github/workflows/code-quality-security.yml@master
+  with:
+    ...
+    fail-on-critical: 'false'   # ← bypasses Trivy blocking for this repo only
+    fail-on-secrets: 'false'    # ← bypasses GitLeaks blocking for this repo only
+```
+
+Effect: Only this repo is bypassed. All other repos still enforce blocking.
 
 ---
 
