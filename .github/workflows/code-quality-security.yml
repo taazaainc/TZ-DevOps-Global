@@ -361,8 +361,8 @@ jobs:
             echo "Services scanned:"
             while IFS= read -r svc; do
               if [ -z "$svc" ]; then continue; fi
-              # Job name format: "<ServiceName>-SCA & Security Scan"
-              JOB_CONCLUSION=$(echo "$RUN_JOBS" | grep "^${svc}-SCA" | cut -d'|' -f2)
+              # Job name format from API: "code-quality-security / <ServiceName>-SCA & Security Scan"
+              JOB_CONCLUSION=$(echo "$RUN_JOBS" | grep "/ ${svc}-SCA" | cut -d'|' -f2)
               if [ "$JOB_CONCLUSION" = "success" ]; then
                 echo "  ✅ $svc"
               elif [ "$JOB_CONCLUSION" = "failure" ]; then
