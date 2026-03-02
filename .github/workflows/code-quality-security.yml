@@ -352,9 +352,24 @@ jobs:
           elif [ "$RESULT" = "failure" ]; then
             echo "❌ One or more service scans FAILED"
             echo ""
-            echo "Services scanned (check individual jobs for which failed):"
+
+            # Query this run's jobs via API to get per-job conclusions
+            RUN_JOBS=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+              "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
+              | jq -r '.jobs[] | "\(.name)|\(.conclusion)"' 2>/dev/null || echo "")
+
+            echo "Services scanned:"
             while IFS= read -r svc; do
-              [ -n "$svc" ] && echo "  ⚠️  $svc"
+              if [ -z "$svc" ]; then continue; fi
+              # Job name format: "<ServiceName>-SCA & Security Scan"
+              JOB_CONCLUSION=$(echo "$RUN_JOBS" | grep "^${svc}-SCA" | cut -d'|' -f2)
+              if [ "$JOB_CONCLUSION" = "success" ]; then
+                echo "  ✅ $svc"
+              elif [ "$JOB_CONCLUSION" = "failure" ]; then
+                echo "  ❌ $svc"
+              else
+                echo "  ⚠️  $svc"
+              fi
             done <<< "$SERVICE_NAMES"
             echo ""
             echo "Result: FAILED — merge is blocked. Fix the failing service scan(s) above."
