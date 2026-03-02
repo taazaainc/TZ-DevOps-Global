@@ -313,6 +313,28 @@ jobs:
           find "$GITHUB_WORKSPACE" -name "TestResults" -type d -exec rm -rf {} + 2>/dev/null || true
           echo "Workspace artifact cleanup complete"
 
+      - name: Cleanup home package caches
+        if: always()
+        run: |
+          # Runs inside the container as root — safe to clean $HOME which maps to
+          # _work/_temp/_github_home on the host runner. Without this, NuGet/.dotnet/
+          # .local caches accumulate across runs (9-11G per runner instance).
+          #
+          # Intentionally KEPT (do not remove):
+          #   $HOME/.cache/trivy  — Trivy vuln DB (~4G), avoids re-download every run
+          #   $HOME/.sonar        — SonarQube scanner cache, speeds up analysis
+          #
+          # Safe because: each runner instance has its own _github_home, parallel
+          # matrix jobs run on separate instances, no downstream step reads these caches.
+          echo "Clearing package manager caches from container home..."
+          rm -rf "$HOME/.nuget"     2>/dev/null || true
+          rm -rf "$HOME/.dotnet"    2>/dev/null || true
+          rm -rf "$HOME/.local"     2>/dev/null || true
+          rm -rf "$HOME/.pub-cache" 2>/dev/null || true
+          rm -rf "$HOME/.m2"        2>/dev/null || true
+          rm -rf "$HOME/.npm"       2>/dev/null || true
+          echo "✅ Home caches cleared (trivy DB and sonar cache preserved)"
+
   scan-summary:
     name: Scan Summary
     runs-on: ${{ fromJson(inputs.runner) }}
