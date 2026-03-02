@@ -38,18 +38,18 @@ on:
       fail-on-critical:
         description: >
           Set to 'true' to fail the pipeline when Trivy finds CRITICAL vulnerabilities.
-          Defaults to 'false' — scan runs and reports but does not block merge.
-          Controlled here in the centralized workflow; flip default to 'true' to enable org-wide.
+          Leave empty (default) — org-wide default 'true' is applied via the || operator in the step.
+          Pass 'false' explicitly from a caller repo to bypass blocking for that repo only.
         required: false
-        default: "false"
+        default: ""
         type: string
       fail-on-secrets:
         description: >
           Set to 'true' to fail the pipeline when GitLeaks detects secrets in source code.
-          Defaults to 'false' — scan runs and reports but does not block merge.
-          Controlled here in the centralized workflow; flip default to 'true' to enable org-wide.
+          Leave empty (default) — org-wide default 'true' is applied via the || operator in the step.
+          Pass 'false' explicitly from a caller repo to bypass blocking for that repo only.
         required: false
-        default: "false"
+        default: ""
         type: string
     secrets:
       SONAR_TOKEN:

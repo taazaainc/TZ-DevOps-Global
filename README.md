@@ -89,8 +89,8 @@ Runs SonarQube analysis, Trivy container scan, and GitLeaks secret scan for each
 | `changed_services` | No | JSON array from `check-for-changes` output. Pass `[]` to skip. |
 | `dotnet_container_image` | Yes | Docker image with .NET SDK + sonar-scanner. Store as `vars.DOTNET_CONTAINER_IMAGE` in caller. |
 | `sonar_nodejs_image` | Yes | Docker image for Node.js SonarQube scanning. Store as `vars.SONAR_NODEJS_IMAGE` in caller. |
-| `fail-on-critical` | No | Org default: `true` (blocking). Pass `'false'` from a specific repo's caller to bypass for that repo only. To disable org-wide: change the `inputs.fail-on-critical \|\| 'true'` default in this workflow. |
-| `fail-on-secrets` | No | Org default: `true` (blocking). Pass `'false'` from a specific repo's caller to bypass for that repo only. To disable org-wide: change the `inputs.fail-on-secrets \|\| 'true'` default in this workflow. |
+| `fail-on-critical` | No | Default `""` (empty) — org-wide default `'true'` is applied via `inputs.fail-on-critical \|\| 'true'` in the step. Pass `'false'` explicitly from a caller repo to bypass blocking for that repo only. |
+| `fail-on-secrets` | No | Default `""` (empty) — org-wide default `'true'` is applied via `inputs.fail-on-secrets \|\| 'true'` in the step. Pass `'false'` explicitly from a caller repo to bypass blocking for that repo only. |
 
 **Secrets required:**
 
