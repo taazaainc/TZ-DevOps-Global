@@ -35,6 +35,22 @@ on:
           Store as a repo variable (vars.SONAR_NODEJS_IMAGE) in the caller.
         required: true
         type: string
+      fail-on-critical:
+        description: >
+          Set to 'true' to fail the pipeline when Trivy finds CRITICAL vulnerabilities.
+          Defaults to 'false' — scan runs and reports but does not block merge.
+          Controlled here in the centralized workflow; flip default to 'true' to enable org-wide.
+        required: false
+        default: "false"
+        type: string
+      fail-on-secrets:
+        description: >
+          Set to 'true' to fail the pipeline when GitLeaks detects secrets in source code.
+          Defaults to 'false' — scan runs and reports but does not block merge.
+          Controlled here in the centralized workflow; flip default to 'true' to enable org-wide.
+        required: false
+        default: "false"
+        type: string
     secrets:
       SONAR_TOKEN:
         description: SonarQube authentication token
@@ -217,6 +233,7 @@ jobs:
           exit 1
 
       - name: Docker Build for Trivy Scan
+        if: always()
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE_DIR
@@ -246,6 +263,7 @@ jobs:
           docker tag $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
 
       - name: Trivy Security Scan
+        if: always()
         uses: taazaainc/TZ-DevOps-Global/.github/actions/trivy-scan@master
         with:
           image-name: ${{ matrix.service.image_name }}:test-${{ github.run_number }}
@@ -253,11 +271,20 @@ jobs:
           trivy-image: ${{ vars.TRIVY_IMAGE || 'aquasec/trivy:latest' }}
           registry-username: ${{ secrets.TCR_USERNAME }}
           registry-password: ${{ secrets.TCR_PASSWORD }}
+          # ── Centralized control ─────────────────────────────────────────────
+          # Change 'true' → 'false' here to disable org-wide without touching any caller repo.
+          # Callers can also override per-repo via the fail-on-critical input.
+          fail-on-critical: "true"
 
       - name: GitLeaks Secret Scanning
+        if: always()
         uses: taazaainc/TZ-DevOps-Global/.github/actions/gitleaks-scan@master
         with:
           service-name: ${{ matrix.service.name }}
+          # ── Centralized control ─────────────────────────────────────────────
+          # Change 'true' → 'false' here to disable org-wide without touching any caller repo.
+          # Callers can also override per-repo via the fail-on-secrets input.
+          fail-on-secrets: "true"
 
       - name: Cleanup Docker Images
         if: always()
