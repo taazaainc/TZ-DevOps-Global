@@ -233,7 +233,7 @@ jobs:
           exit 1
 
       - name: Docker Build for Trivy Scan
-        if: always()
+        if: success()
         shell: bash
         run: |
           cd $GITHUB_WORKSPACE_DIR
