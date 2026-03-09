@@ -186,7 +186,7 @@ jobs:
             -e SONAR_TOKEN="$SONAR_TOKEN" \
             -e EXTRA_ARGS="-Dsonar.projectKey=${{ matrix.service.sonar_key }} \
                           -Dsonar.projectName=${{ matrix.service.sonar_key }} \
-                          -Dsonar.sources=src/UI \
+                          -Dsonar.sources=$MAIN_PROJECT_PATH \
                           -Dsonar.projectVersion=${{ github.head_ref || github.ref_name }}-${{ github.run_number }} \
                           -Dsonar.verbose=true" \
             -v "${{ github.workspace }}:/usr/src" \
