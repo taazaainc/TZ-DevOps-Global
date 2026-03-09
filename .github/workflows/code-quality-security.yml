@@ -18,13 +18,13 @@ on:
         required: false
         default: '[]'
         type: string
-      dotnet_container_image:
+      base_container_image:
         description: >
           Docker image for the job container (.NET scanning + Trivy builds).
           Must have dotnet SDK, sonar-scanner, docker CLI available.
           Must be an input (not secret) — GitHub disallows secrets context in
           container.image and in with: of reusable workflow calls.
-          Store as a repo variable (vars.DOTNET_CONTAINER_IMAGE) in the caller.
+          Store as a repo variable (vars.BASE_CONTAINER_IMAGE) in the caller.
         required: true
         type: string
       sonar_nodejs_image:
@@ -90,7 +90,7 @@ jobs:
       SONAR_NODEJS_IMAGE: ${{ inputs.sonar_nodejs_image }}
 
     container:
-      image: ${{ inputs.dotnet_container_image }}
+      image: ${{ inputs.base_container_image }}
       options: >-
         --privileged
         -v /var/run/docker.sock:/var/run/docker.sock
