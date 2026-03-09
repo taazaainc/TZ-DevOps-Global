@@ -263,7 +263,7 @@ jobs:
           docker tag $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
 
       - name: Trivy Security Scan
-        if: always()
+        if: success()
         uses: taazaainc/TZ-DevOps-Global/.github/actions/trivy-scan@master
         with:
           image-name: ${{ matrix.service.image_name }}:test-${{ github.run_number }}
@@ -278,7 +278,7 @@ jobs:
           fail-on-critical: ${{ inputs.fail-on-critical || 'true' }}
 
       - name: GitLeaks Secret Scanning
-        if: always()
+        if: success()
         uses: taazaainc/TZ-DevOps-Global/.github/actions/gitleaks-scan@master
         with:
           service-name: ${{ matrix.service.name }}
