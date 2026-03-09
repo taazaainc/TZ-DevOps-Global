@@ -33,7 +33,8 @@ on:
           Must be an input (not secret) — GitHub disallows secrets context in
           with: of reusable workflow calls.
           Store as a repo variable (vars.SONAR_NODEJS_IMAGE) in the caller.
-        required: true
+          Optional — only required for repos with Node.js/UI services.
+        required: false
         type: string
       fail-on-critical:
         description: >
