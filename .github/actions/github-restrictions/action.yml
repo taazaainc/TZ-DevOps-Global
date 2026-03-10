@@ -25,13 +25,13 @@ inputs:
       Maximum number of files allowed to be changed in a single PR.
       Set to 0 to disable this check.
     required: false
-    default: "0"
+    default: "3"
   max-lines:
     description: >
       Maximum number of lines (added + deleted) allowed in a single PR.
       Set to 0 to disable this check.
     required: false
-    default: "0"
+    default: "3"
   size-exempt-label:
     description: >
       PR label name that bypasses the PR size check.
