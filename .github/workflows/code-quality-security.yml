@@ -253,11 +253,18 @@ jobs:
             # as GitHub expression interpolation can mangle multi-line PEM keys.
             if [ -n "$PRE_BUILD_SSH_KEY" ]; then
               mkdir -p ~/.ssh && chmod 700 ~/.ssh
-              # Secrets stored via GitHub UI may use literal \n instead of real newlines.
-              # Normalize: replace literal \n with real newlines, ensure trailing newline.
-              printf '%s\n' "$PRE_BUILD_SSH_KEY" | sed 's/\\n/\n/g' > ~/.ssh/id_rsa_prebuild
+              # Python writes the key correctly for both real newlines and literal \n sequences.
+              # Shell printf/sed has GNU sed quoting issues with \n in replacement strings.
+              python3 -c "
+import os
+key = os.environ['PRE_BUILD_SSH_KEY']
+if '\n' not in key:
+    key = key.replace('\\\\n', '\n')
+key = key.rstrip('\n') + '\n'
+open(os.path.expanduser('~/.ssh/id_rsa_prebuild'), 'w').write(key)
+"
               chmod 600 ~/.ssh/id_rsa_prebuild
-              export PRE_BUILD_SSH_KEY_PATH=~/.ssh/id_rsa_prebuild
+              export PRE_BUILD_SSH_KEY_PATH="$HOME/.ssh/id_rsa_prebuild"
             fi
             bash "$PRE_BUILD"
           else
