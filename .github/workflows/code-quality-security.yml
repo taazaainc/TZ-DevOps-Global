@@ -65,6 +65,12 @@ on:
       TCR_PASSWORD:
         description: Container registry password
         required: true
+      PRE_BUILD_SSH_KEY:
+        description: >
+          Optional SSH private key for pre-build scripts that need to clone private repos
+          (e.g. Helm charts repo for env file generation).
+          Only required for repos that define pre_build_script in variables.json.
+        required: false
 
 jobs:
   code-quality-security:
@@ -89,6 +95,7 @@ jobs:
       TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
       TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
       SONAR_NODEJS_IMAGE: ${{ inputs.sonar_nodejs_image }}
+      PRE_BUILD_SSH_KEY: ${{ secrets.PRE_BUILD_SSH_KEY }}
 
     container:
       image: ${{ inputs.base_container_image }}
@@ -232,6 +239,18 @@ jobs:
 
           echo "⚠️ Quality Gate check timeout"
           exit 1
+
+      - name: Run Pre-Build Hook
+        if: success()
+        shell: bash
+        run: |
+          PRE_BUILD=$(jq -r '.pre_build_script // empty' <<< '${{ toJson(matrix.service) }}')
+          if [ -n "$PRE_BUILD" ] && [ -f "$PRE_BUILD" ]; then
+            echo "Running pre-build hook: $PRE_BUILD"
+            bash "$PRE_BUILD"
+          else
+            echo "No pre_build_script defined -- skipping."
+          fi
 
       - name: Docker Build for Trivy Scan
         if: success()
