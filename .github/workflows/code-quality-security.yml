@@ -95,7 +95,6 @@ jobs:
       TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
       TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
       SONAR_NODEJS_IMAGE: ${{ inputs.sonar_nodejs_image }}
-      PRE_BUILD_SSH_KEY: ${{ secrets.PRE_BUILD_SSH_KEY }}
 
     container:
       image: ${{ inputs.base_container_image }}
@@ -242,16 +241,19 @@ jobs:
 
       - name: Run Pre-Build Hook
         if: success()
+        env:
+          PRE_BUILD_SSH_KEY: ${{ secrets.PRE_BUILD_SSH_KEY }}
         shell: bash
         run: |
           PRE_BUILD=$(jq -r '.pre_build_script // empty' <<< '${{ toJson(matrix.service) }}')
           if [ -n "$PRE_BUILD" ] && [ -f "$PRE_BUILD" ]; then
             echo "Running pre-build hook: $PRE_BUILD"
-            # Write SSH key via GitHub expression (same pattern as build-deploy)
-            # This avoids env var encoding issues with the private key
-            if [ -n "${{ secrets.PRE_BUILD_SSH_KEY }}" ]; then
+            # Write SSH key from env var — env: block preserves PEM newlines correctly.
+            # Do NOT use ${{ secrets.X }} expression directly in run: shell commands
+            # as GitHub expression interpolation can mangle multi-line PEM keys.
+            if [ -n "$PRE_BUILD_SSH_KEY" ]; then
               mkdir -p ~/.ssh && chmod 700 ~/.ssh
-              printf '%s\n' "${{ secrets.PRE_BUILD_SSH_KEY }}" > ~/.ssh/id_rsa_prebuild
+              printf '%s' "$PRE_BUILD_SSH_KEY" > ~/.ssh/id_rsa_prebuild
               chmod 600 ~/.ssh/id_rsa_prebuild
               export PRE_BUILD_SSH_KEY_PATH=~/.ssh/id_rsa_prebuild
             fi
