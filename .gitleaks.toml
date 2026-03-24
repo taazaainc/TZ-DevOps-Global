@@ -12,6 +12,7 @@ description = "Exclude temporary build artifacts and analysis files"
 paths = [
     # SonarQube temporary analysis files
     '''\.sonarqube/''',
+    '''\.scannerwork/''',
 
     # Build output directories
     '''.*/bin/.*''',
