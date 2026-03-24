@@ -251,7 +251,7 @@ jobs:
             # This avoids env var encoding issues with the private key
             if [ -n "${{ secrets.PRE_BUILD_SSH_KEY }}" ]; then
               mkdir -p ~/.ssh && chmod 700 ~/.ssh
-              echo "${{ secrets.PRE_BUILD_SSH_KEY }}" > ~/.ssh/id_rsa_prebuild
+              printf '%s\n' "${{ secrets.PRE_BUILD_SSH_KEY }}" > ~/.ssh/id_rsa_prebuild
               chmod 600 ~/.ssh/id_rsa_prebuild
               export PRE_BUILD_SSH_KEY_PATH=~/.ssh/id_rsa_prebuild
             fi
