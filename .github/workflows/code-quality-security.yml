@@ -257,10 +257,6 @@ jobs:
               # Normalize: replace literal \n with real newlines, ensure trailing newline.
               printf '%s\n' "$PRE_BUILD_SSH_KEY" | sed 's/\\n/\n/g' > ~/.ssh/id_rsa_prebuild
               chmod 600 ~/.ssh/id_rsa_prebuild
-              # Validate key is readable before proceeding
-              ssh-keygen -y -f ~/.ssh/id_rsa_prebuild > /dev/null \
-                && echo "SSH key validated OK" \
-                || { echo "ERROR: SSH key file is invalid — check secret format"; exit 1; }
               export PRE_BUILD_SSH_KEY_PATH=~/.ssh/id_rsa_prebuild
             fi
             bash "$PRE_BUILD"
