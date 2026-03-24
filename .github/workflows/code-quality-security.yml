@@ -65,6 +65,18 @@ on:
       TCR_PASSWORD:
         description: Container registry password
         required: true
+      PRE_BUILD_AWS_ACCESS_KEY_ID:
+        description: >
+          Optional AWS access key ID for pre-build scripts that need to download
+          files from S3 (e.g. frontend environment files).
+          Only required for repos that define pre_build_script in variables.json.
+        required: false
+      PRE_BUILD_AWS_SECRET_ACCESS_KEY:
+        description: >
+          Optional AWS secret access key for pre-build scripts that need to
+          download files from S3.
+          Only required for repos that define pre_build_script in variables.json.
+        required: false
 
 jobs:
   code-quality-security:
@@ -232,6 +244,21 @@ jobs:
 
           echo "⚠️ Quality Gate check timeout"
           exit 1
+
+      - name: Run Pre-Build Hook
+        if: success()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.PRE_BUILD_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PRE_BUILD_AWS_SECRET_ACCESS_KEY }}
+        shell: bash
+        run: |
+          PRE_BUILD=$(jq -r '.pre_build_script // empty' <<< '${{ toJson(matrix.service) }}')
+          if [ -n "$PRE_BUILD" ] && [ -f "$PRE_BUILD" ]; then
+            echo "Running pre-build hook: $PRE_BUILD"
+            bash "$PRE_BUILD"
+          else
+            echo "No pre_build_script defined -- skipping."
+          fi
 
       - name: Docker Build for Trivy Scan
         if: success()
