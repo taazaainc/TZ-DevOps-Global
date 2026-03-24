@@ -305,6 +305,19 @@ jobs:
           # To bypass for one specific repo: that repo passes fail-on-critical: 'false' in its caller.
           fail-on-critical: ${{ inputs.fail-on-critical || 'true' }}
 
+      - name: Post-Build Cleanup
+        if: success()
+        env:
+          PHASE: cleanup
+        shell: bash
+        run: |
+          PRE_BUILD=$(jq -r '.pre_build_script // empty' <<< '${{ toJson(matrix.service) }}')
+          if [ -n "$PRE_BUILD" ] && [ -f "$PRE_BUILD" ]; then
+            bash "$PRE_BUILD"
+          else
+            echo "No pre_build_script defined -- skipping cleanup."
+          fi
+
       - name: GitLeaks Secret Scanning
         if: success()
         uses: taazaainc/TZ-DevOps-Global/.github/actions/gitleaks-scan@master
