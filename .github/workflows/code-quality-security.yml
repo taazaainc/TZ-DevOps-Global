@@ -65,12 +65,6 @@ on:
       TCR_PASSWORD:
         description: Container registry password
         required: true
-      PRE_BUILD_SSH_KEY:
-        description: >
-          Optional SSH private key for pre-build scripts that need to clone private repos
-          (e.g. Helm charts repo for env file generation).
-          Only required for repos that define pre_build_script in variables.json.
-        required: false
 
 jobs:
   code-quality-security:
@@ -238,31 +232,6 @@ jobs:
 
           echo "⚠️ Quality Gate check timeout"
           exit 1
-
-      - name: Run Pre-Build Hook
-        if: success()
-        env:
-          PRE_BUILD_SSH_KEY: ${{ secrets.PRE_BUILD_SSH_KEY }}
-        shell: bash
-        run: |
-          PRE_BUILD=$(jq -r '.pre_build_script // empty' <<< '${{ toJson(matrix.service) }}')
-          if [ -n "$PRE_BUILD" ] && [ -f "$PRE_BUILD" ]; then
-            echo "Running pre-build hook: $PRE_BUILD"
-            # Write SSH key from env var — env: block preserves PEM newlines correctly.
-            # Do NOT use ${{ secrets.X }} expression directly in run: shell commands
-            # as GitHub expression interpolation can mangle multi-line PEM keys.
-            if [ -n "$PRE_BUILD_SSH_KEY" ]; then
-              mkdir -p ~/.ssh && chmod 700 ~/.ssh
-              # Secrets stored via GitHub UI may use literal \n instead of real newlines.
-              # Normalize: replace literal \n with real newlines, ensure trailing newline.
-              printf '%s\n' "$PRE_BUILD_SSH_KEY" | sed 's/\\n/\n/g' > ~/.ssh/id_rsa_prebuild
-              chmod 600 ~/.ssh/id_rsa_prebuild
-              export PRE_BUILD_SSH_KEY_PATH=~/.ssh/id_rsa_prebuild
-            fi
-            bash "$PRE_BUILD"
-          else
-            echo "No pre_build_script defined -- skipping."
-          fi
 
       - name: Docker Build for Trivy Scan
         if: success()
