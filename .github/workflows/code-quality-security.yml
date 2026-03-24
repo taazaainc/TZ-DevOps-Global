@@ -247,6 +247,14 @@ jobs:
           PRE_BUILD=$(jq -r '.pre_build_script // empty' <<< '${{ toJson(matrix.service) }}')
           if [ -n "$PRE_BUILD" ] && [ -f "$PRE_BUILD" ]; then
             echo "Running pre-build hook: $PRE_BUILD"
+            # Write SSH key via GitHub expression (same pattern as build-deploy)
+            # This avoids env var encoding issues with the private key
+            if [ -n "${{ secrets.PRE_BUILD_SSH_KEY }}" ]; then
+              mkdir -p ~/.ssh && chmod 700 ~/.ssh
+              echo "${{ secrets.PRE_BUILD_SSH_KEY }}" > ~/.ssh/id_rsa_prebuild
+              chmod 600 ~/.ssh/id_rsa_prebuild
+              export PRE_BUILD_SSH_KEY_PATH=~/.ssh/id_rsa_prebuild
+            fi
             bash "$PRE_BUILD"
           else
             echo "No pre_build_script defined -- skipping."
