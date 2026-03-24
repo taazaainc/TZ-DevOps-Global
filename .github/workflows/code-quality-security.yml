@@ -258,8 +258,8 @@ jobs:
               python3 -c "
 import os
 key = os.environ['PRE_BUILD_SSH_KEY']
-if '\n' not in key:
-    key = key.replace('\\\\n', '\n')
+if r'\n' in key:
+    key = key.replace(r'\n', '\n')
 key = key.rstrip('\n') + '\n'
 open(os.path.expanduser('~/.ssh/id_rsa_prebuild'), 'w').write(key)
 "
