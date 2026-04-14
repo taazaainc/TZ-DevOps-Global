@@ -56,9 +56,9 @@ runs:
           rm /tmp/gitleaks.tar.gz
         fi
 
-        # Resolve config: prefer repo-local file, fall back to global config from TZ-DevOps-Global
+        # Resolve config: prefer repo-local file, fall back to global config bundled with this action
         LOCAL_CONFIG="${GITHUB_WORKSPACE}/${{ inputs.config-file }}"
-        GLOBAL_CONFIG="${{ github.action_path }}/../../../../.gitleaks.toml"
+        GLOBAL_CONFIG="${{ github.action_path }}/.gitleaks.toml"
 
         if [ -f "$LOCAL_CONFIG" ]; then
           CONFIG_FILE="$LOCAL_CONFIG"
