@@ -145,7 +145,7 @@ jobs:
 
       - name: Run SonarQube Build, Test & Analysis
         if: ${{ !matrix.service.scanner_type }}
-        run: bash /scripts/dotnet-build-test-sonarqube.sh
+        run: bash /scripts/dotnet-build-test-sonarqube-1.sh
 
       - name: Wait for SonarQube Processing
         if: ${{ !matrix.service.scanner_type }}
