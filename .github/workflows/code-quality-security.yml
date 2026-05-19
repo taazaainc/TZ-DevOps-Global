@@ -270,13 +270,16 @@ jobs:
       # Java Service Scanning (scanner_type: 'java')
       - name: Pull Java SonarQube Image
         if: ${{ matrix.service.scanner_type == 'java' }}
-        run: docker pull "$(echo "$SONAR_JAVA_IMAGE" | xargs)"
+        run: |
+          JAVA_IMAGE=$(printf '%s' "$SONAR_JAVA_IMAGE" | tr -d '[:space:]')
+          echo "Pulling image: $JAVA_IMAGE"
+          docker pull "$JAVA_IMAGE"
 
       - name: SonarQube Scan for Java
         if: ${{ matrix.service.scanner_type == 'java' }}
         continue-on-error: true
         run: |
-          JAVA_IMAGE="$(echo "$SONAR_JAVA_IMAGE" | xargs)"
+          JAVA_IMAGE=$(printf '%s' "$SONAR_JAVA_IMAGE" | tr -d '[:space:]')
           docker run --rm \
             -e SONAR_HOST_URL="$SONAR_HOST_URL" \
             -e SONAR_TOKEN="$SONAR_TOKEN" \
