@@ -86,6 +86,16 @@ on:
           download files from S3.
           Only required for repos that define pre_build_script in variables.json.
         required: false
+      NEXUS_USERNAME:
+        description: >
+          Nexus repository username for resolving private Maven dependencies.
+          Only required for repos with Java services that pull from a private Nexus.
+        required: false
+      NEXUS_PASSWORD:
+        description: >
+          Nexus repository password for resolving private Maven dependencies.
+          Only required for repos with Java services that pull from a private Nexus.
+        required: false
 
 jobs:
   code-quality-security:
@@ -263,6 +273,8 @@ jobs:
           docker run --rm \
             -e SONAR_HOST_URL="$SONAR_HOST_URL" \
             -e SONAR_TOKEN="$SONAR_TOKEN" \
+            -e NEXUS_USERNAME="${{ secrets.NEXUS_USERNAME }}" \
+            -e NEXUS_PASSWORD="${{ secrets.NEXUS_PASSWORD }}" \
             -e EXTRA_ARGS="-Dsonar.projectKey=${{ matrix.service.sonar_key }} \
                           -Dsonar.projectName=${{ matrix.service.sonar_key }} \
                           -Dsonar.sources=$MAIN_PROJECT_PATH \
