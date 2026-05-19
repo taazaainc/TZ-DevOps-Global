@@ -270,12 +270,13 @@ jobs:
       # Java Service Scanning (scanner_type: 'java')
       - name: Pull Java SonarQube Image
         if: ${{ matrix.service.scanner_type == 'java' }}
-        run: docker pull $SONAR_JAVA_IMAGE
+        run: docker pull "$(echo "$SONAR_JAVA_IMAGE" | xargs)"
 
       - name: SonarQube Scan for Java
         if: ${{ matrix.service.scanner_type == 'java' }}
         continue-on-error: true
         run: |
+          JAVA_IMAGE="$(echo "$SONAR_JAVA_IMAGE" | xargs)"
           docker run --rm \
             -e SONAR_HOST_URL="$SONAR_HOST_URL" \
             -e SONAR_TOKEN="$SONAR_TOKEN" \
@@ -285,7 +286,7 @@ jobs:
             -e SONAR_SOURCES="$MAIN_PROJECT_PATH" \
             -e SONAR_PROJECT_VERSION="${{ github.head_ref || github.ref_name }}-${{ github.run_number }}" \
             -v "${{ github.workspace }}:/usr/src" \
-            $SONAR_JAVA_IMAGE
+            "$JAVA_IMAGE"
 
       - name: Wait for SonarQube Processing (Java)
         if: ${{ matrix.service.scanner_type == 'java' }}
