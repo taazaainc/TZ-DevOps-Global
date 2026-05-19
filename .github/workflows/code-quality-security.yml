@@ -277,7 +277,6 @@ jobs:
 
       - name: SonarQube Scan for Java
         if: ${{ matrix.service.scanner_type == 'java' }}
-        continue-on-error: true
         run: |
           JAVA_IMAGE=$(printf '%s' "$SONAR_JAVA_IMAGE" | tr -d '[:space:]')
           docker run --rm \
@@ -305,31 +304,21 @@ jobs:
             response=$(curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}")
             status=$(echo "$response" | jq -r '.projectStatus.status' 2>/dev/null || echo "PARSE_ERROR")
 
-            if [ "$status" = "PARSE_ERROR" ]; then
-              echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
-              sleep 10
-              attempt=$((attempt+1))
-              continue
+            if [ "$status" = "OK" ]; then
+              echo "✅ Quality Gate Passed!"
+              exit 0
+            elif [ "$status" = "ERROR" ]; then
+              echo "❌ Quality Gate Failed!"
+              echo "Details: $response"
+              exit 1
             fi
 
-            if [ "$status" != "NONE" ] && [ "$status" != "null" ]; then
-              echo "Quality Gate Status: $status"
-              if [ "$status" = "OK" ]; then
-                echo "✅ Quality Gate Passed!"
-                exit 0
-              elif [ "$status" = "ERROR" ]; then
-                echo "❌ Quality Gate Failed!"
-                echo "Details: $response"
-                exit 1
-              fi
-            fi
-
-            echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
+            echo "⏳ Waiting for SonarQube analysis... status='$status' (attempt $((attempt+1))/$max_attempts)"
             sleep 10
             attempt=$((attempt+1))
           done
 
-          echo "⚠️ Quality Gate check timeout"
+          echo "⚠️ Quality Gate check timeout. Last response: $response"
           exit 1
 
       - name: Run Pre-Build Hook
