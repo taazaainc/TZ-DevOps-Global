@@ -266,6 +266,10 @@ jobs:
           exit 1
 
       # Java Service Scanning (scanner_type: 'java')
+      - name: Pull Java SonarQube Image
+        if: ${{ matrix.service.scanner_type == 'java' }}
+        run: docker pull $SONAR_JAVA_IMAGE
+
       - name: SonarQube Scan for Java
         if: ${{ matrix.service.scanner_type == 'java' }}
         continue-on-error: true
