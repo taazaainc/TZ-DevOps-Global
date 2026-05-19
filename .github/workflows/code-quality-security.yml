@@ -36,6 +36,15 @@ on:
           Optional — only required for repos with Node.js/UI services.
         required: false
         type: string
+      sonar_java_image:
+        description: >
+          Docker image used to run SonarQube analysis for Java services.
+          Must be an input (not secret) — GitHub disallows secrets context in
+          with: of reusable workflow calls.
+          Store as a repo variable (vars.SONAR_JAVA_IMAGE) in the caller.
+          Optional — only required for repos with Java services.
+        required: false
+        type: string
       fail-on-critical:
         description: >
           Set to 'true' to fail the pipeline when Trivy finds CRITICAL vulnerabilities.
@@ -101,6 +110,7 @@ jobs:
       TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
       TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
       SONAR_NODEJS_IMAGE: ${{ inputs.sonar_nodejs_image }}
+      SONAR_JAVA_IMAGE: ${{ inputs.sonar_java_image }}
 
     container:
       image: ${{ inputs.base_container_image }}
@@ -210,6 +220,63 @@ jobs:
 
       - name: SonarQube Quality Gate Check (Node.js)
         if: ${{ matrix.service.scanner_type == 'nodejs' }}
+        run: |
+          max_attempts=30
+          attempt=0
+
+          while [ $attempt -lt $max_attempts ]; do
+            response=$(curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}")
+            status=$(echo "$response" | jq -r '.projectStatus.status' 2>/dev/null || echo "PARSE_ERROR")
+
+            if [ "$status" = "PARSE_ERROR" ]; then
+              echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
+              sleep 10
+              attempt=$((attempt+1))
+              continue
+            fi
+
+            if [ "$status" != "NONE" ] && [ "$status" != "null" ]; then
+              echo "Quality Gate Status: $status"
+              if [ "$status" = "OK" ]; then
+                echo "✅ Quality Gate Passed!"
+                exit 0
+              elif [ "$status" = "ERROR" ]; then
+                echo "❌ Quality Gate Failed!"
+                echo "Details: $response"
+                exit 1
+              fi
+            fi
+
+            echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
+            sleep 10
+            attempt=$((attempt+1))
+          done
+
+          echo "⚠️ Quality Gate check timeout"
+          exit 1
+
+      # Java Service Scanning (scanner_type: 'java')
+      - name: SonarQube Scan for Java
+        if: ${{ matrix.service.scanner_type == 'java' }}
+        continue-on-error: true
+        run: |
+          docker run --rm \
+            -e SONAR_HOST_URL="$SONAR_HOST_URL" \
+            -e SONAR_TOKEN="$SONAR_TOKEN" \
+            -e EXTRA_ARGS="-Dsonar.projectKey=${{ matrix.service.sonar_key }} \
+                          -Dsonar.projectName=${{ matrix.service.sonar_key }} \
+                          -Dsonar.sources=$MAIN_PROJECT_PATH \
+                          -Dsonar.projectVersion=${{ github.head_ref || github.ref_name }}-${{ github.run_number }} \
+                          -Dsonar.verbose=true" \
+            -v "${{ github.workspace }}:/usr/src" \
+            $SONAR_JAVA_IMAGE
+
+      - name: Wait for SonarQube Processing (Java)
+        if: ${{ matrix.service.scanner_type == 'java' }}
+        run: sleep 30
+
+      - name: SonarQube Quality Gate Check (Java)
+        if: ${{ matrix.service.scanner_type == 'java' }}
         run: |
           max_attempts=30
           attempt=0
