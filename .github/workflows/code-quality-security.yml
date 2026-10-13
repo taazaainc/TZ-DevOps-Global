@@ -96,6 +96,25 @@ on:
           Nexus repository password for resolving private Maven dependencies.
           Only required for repos with Java services that pull from a private Nexus.
         required: false
+    outputs:
+      passed_services:
+        description: >
+          JSON array of service objects (same shape as the changed_services input)
+          whose scan succeeded. Empty array '[]' if none passed, or if
+          changed_services was empty. Does not change this workflow's own
+          pass/fail result — a caller that only checks job success/failure
+          (e.g. for merge-blocking) sees identical behavior to before this
+          output existed. For callers that want to deploy whichever services
+          passed even when the overall call reports failure (e.g. a PR where
+          one service's scan fails shouldn't block every other service's dev
+          deploy), consume this output directly instead of gating on
+          needs.<job>.result.
+        value: ${{ jobs.scan-summary.outputs.passed_services }}
+      failed_services:
+        description: >
+          JSON array of service objects whose scan failed, or whose result
+          could not be determined. Empty array '[]' if none failed.
+        value: ${{ jobs.scan-summary.outputs.failed_services }}
 
 jobs:
   code-quality-security:
@@ -457,8 +476,12 @@ jobs:
     runs-on: ${{ fromJson(inputs.runner) }}
     needs: [code-quality-security]
     if: always()
+    outputs:
+      passed_services: ${{ steps.summarize.outputs.passed_services }}
+      failed_services: ${{ steps.summarize.outputs.failed_services }}
     steps:
       - name: Report scan results
+        id: summarize
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -474,6 +497,8 @@ jobs:
             echo "⏭️  No services changed — scan skipped."
             echo ""
             echo "Result: SKIPPED (no changed services detected)"
+            echo "passed_services=[]" >> $GITHUB_OUTPUT
+            echo "failed_services=[]" >> $GITHUB_OUTPUT
             exit 0
           fi
 
@@ -489,6 +514,10 @@ jobs:
             done <<< "$SERVICE_NAMES"
             echo ""
             echo "Result: ALL PASSED — merge is allowed."
+            echo "passed_services<<EOF" >> $GITHUB_OUTPUT
+            echo "$SERVICES" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "failed_services=[]" >> $GITHUB_OUTPUT
             exit 0
           elif [ "$RESULT" = "failure" ]; then
             echo "❌ One or more service scans FAILED"
@@ -499,6 +528,8 @@ jobs:
               "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
               | jq -r '.jobs[] | "\(.name)|\(.conclusion)"' 2>/dev/null || echo "")
 
+            PASSED_NAMES=""
+            FAILED_NAMES=""
             echo "Services scanned:"
             while IFS= read -r svc; do
               if [ -z "$svc" ]; then continue; fi
@@ -506,14 +537,37 @@ jobs:
               JOB_CONCLUSION=$(echo "$RUN_JOBS" | grep "/ ${svc}-SCA" | cut -d'|' -f2)
               if [ "$JOB_CONCLUSION" = "success" ]; then
                 echo "  ✅ $svc"
+                PASSED_NAMES="${PASSED_NAMES}${svc}"$'\n'
               elif [ "$JOB_CONCLUSION" = "failure" ]; then
                 echo "  ❌ $svc"
+                FAILED_NAMES="${FAILED_NAMES}${svc}"$'\n'
               else
                 echo "  ⚠️  $svc"
+                FAILED_NAMES="${FAILED_NAMES}${svc}"$'\n'
               fi
             done <<< "$SERVICE_NAMES"
             echo ""
             echo "Result: FAILED — merge is blocked. Fix the failing service scan(s) above."
+
+            # Project the full service objects (not just names) so a caller's
+            # build-deploy matrix can consume this directly, same shape as
+            # changed_services.
+            PASSED_JSON=$(jq -c --argjson all "$SERVICES" --arg names "$PASSED_NAMES" '
+              ($names | rtrimstr("\n") | split("\n") | map(select(length > 0))) as $p
+              | [$all[] | select(.name as $n | $p | index($n) != null)]
+            ')
+            FAILED_JSON=$(jq -c --argjson all "$SERVICES" --arg names "$FAILED_NAMES" '
+              ($names | rtrimstr("\n") | split("\n") | map(select(length > 0))) as $f
+              | [$all[] | select(.name as $n | $f | index($n) != null)]
+            ')
+
+            echo "passed_services<<EOF" >> $GITHUB_OUTPUT
+            echo "$PASSED_JSON" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+            echo "failed_services<<EOF" >> $GITHUB_OUTPUT
+            echo "$FAILED_JSON" >> $GITHUB_OUTPUT
+            echo "EOF" >> $GITHUB_OUTPUT
+
             exit 1
           else
             echo "⚠️  Unexpected scan result: $RESULT"
@@ -522,5 +576,7 @@ jobs:
             while IFS= read -r svc; do
               [ -n "$svc" ] && echo "  ⚠️  $svc"
             done <<< "$SERVICE_NAMES"
+            echo "passed_services=[]" >> $GITHUB_OUTPUT
+            echo "failed_services=[]" >> $GITHUB_OUTPUT
             exit 1
           fi
