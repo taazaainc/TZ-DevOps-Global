@@ -98,16 +98,23 @@ runs:
         # Use GitHub REST API to list PR files — no git checkout or fetch needed.
         # Composite actions run without a workspace checkout, so git commands are unavailable.
         # The API returns up to 3000 files (paginated); 100 per page covers all real PRs.
+        #
+        # Deleting a forbidden file is the fix, not a new violation — a PR that
+        # removes a wrongly-committed secret/build-artifact file must not be
+        # blocked for removing it. Pagination termination is checked on the raw
+        # page count, not the filtered filename list, so a page made entirely of
+        # removed files doesn't look like "no more pages" and truncate the scan.
         CHANGED_FILES=""
         PAGE=1
         while true; do
-          BATCH=$(curl -s \
+          RESPONSE=$(curl -s \
             -H "Authorization: Bearer ${{ github.token }}" \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files?per_page=100&page=$PAGE" \
-            | jq -r '.[].filename')
-          [ -z "$BATCH" ] && break
-          CHANGED_FILES="${CHANGED_FILES}"$'\n'"${BATCH}"
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/files?per_page=100&page=$PAGE")
+          PAGE_COUNT=$(echo "$RESPONSE" | jq 'length' 2>/dev/null || echo 0)
+          [ "$PAGE_COUNT" -eq 0 ] && break
+          BATCH=$(echo "$RESPONSE" | jq -r '.[] | select(.status != "removed") | .filename')
+          [ -n "$BATCH" ] && CHANGED_FILES="${CHANGED_FILES}"$'\n'"${BATCH}"
           PAGE=$((PAGE+1))
         done
 
