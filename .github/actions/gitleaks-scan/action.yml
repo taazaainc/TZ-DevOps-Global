@@ -1,9 +1,10 @@
 name: GitLeaks Secret Scanning
 description: >
   Scans the repository source code for leaked secrets using GitLeaks.
-  Uploads a JSON report as a workflow artifact.
-  Does NOT fail the pipeline on findings by default — set fail-on-secrets
-  to 'true' to make it blocking.
+  The JSON report is scratch-only (used to count findings for this run) and
+  is not uploaded or stored anywhere, so it never counts against the org's
+  Actions artifact storage quota. Does NOT fail the pipeline on findings by
+  default — set fail-on-secrets to 'true' to make it blocking.
 
 inputs:
   gitleaks-version:
@@ -112,13 +113,8 @@ runs:
 
         if [ "${{ inputs.fail-on-secrets }}" = "true" ] && [ "$SECRET_COUNT" -gt 0 ]; then
           echo "::error::Pipeline failed: $SECRET_COUNT secret(s) detected by GitLeaks"
+          rm -f "$GITLEAKS_REPORT"
           exit 1
         fi
 
-    - name: Upload GitLeaks Report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: gitleaks-report-${{ inputs.service-name }}
-        path: /tmp/gitleaks-report-*.json
-        if-no-files-found: warn
+        rm -f "$GITLEAKS_REPORT"
