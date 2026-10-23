@@ -136,10 +136,10 @@ runs:
           exit 1
         fi
 
-    - name: Upload Trivy Report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: trivy-report-${{ inputs.service-name }}
-        path: /tmp/trivy-report-*.json
-        if-no-files-found: warn
+    # - name: Upload Trivy Report
+    #   uses: actions/upload-artifact@v4
+    #   if: always()
+    #   with:
+    #     name: trivy-report-${{ inputs.service-name }}
+    #     path: /tmp/trivy-report-*.json
+    #     if-no-files-found: warn
