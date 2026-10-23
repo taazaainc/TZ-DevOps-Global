@@ -1,8 +1,10 @@
 name: Trivy Container Image Security Scan
 description: >
   Scans a pre-built Docker image for vulnerabilities using Trivy.
-  Uploads a JSON report as a workflow artifact.
-  Set fail-on-critical to 'true' to make CRITICAL vulnerabilities block the pipeline.
+  The JSON report is scratch-only (used to count severities for this run) and
+  is not uploaded or stored anywhere, so it never counts against the org's
+  Actions artifact storage quota. Set fail-on-critical to 'true' to make
+  CRITICAL vulnerabilities block the pipeline.
 
 inputs:
   image-name:
@@ -133,13 +135,8 @@ runs:
 
         if [ "${{ inputs.fail-on-critical }}" = "true" ] && [ "${CRITICAL_COUNT:-0}" -gt 0 ]; then
           echo "::error::Pipeline failed: $CRITICAL_COUNT CRITICAL vulnerabilities found in $IMAGE"
+          rm -f "$TRIVY_REPORT"
           exit 1
         fi
 
-    - name: Upload Trivy Report
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: trivy-report-${{ inputs.service-name }}
-        path: /tmp/trivy-report-*.json
-        if-no-files-found: warn
+        rm -f "$TRIVY_REPORT"
