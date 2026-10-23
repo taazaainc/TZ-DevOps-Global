@@ -1,9 +1,9 @@
 name: Trivy Container Image Security Scan
 description: >
   Scans a pre-built Docker image for vulnerabilities using Trivy.
-  The JSON report is scratch-only (used to count severities for this run) and
-  is not uploaded or stored anywhere, so it never counts against the org's
-  Actions artifact storage quota. Set fail-on-critical to 'true' to make
+  Uploads the JSON report as a workflow artifact kept for 1 day. The upload is
+  best-effort (continue-on-error), so an exhausted Actions budget or artifact
+  quota can never fail the pipeline. Set fail-on-critical to 'true' to make
   CRITICAL vulnerabilities block the pipeline.
 
 inputs:
@@ -11,7 +11,7 @@ inputs:
     description: Full image name including tag (e.g. myregistry.example.com/myproject/myservice:test-42)
     required: true
   service-name:
-    description: Service name used for artifact naming
+    description: Service name used for artifact and report file naming
     required: true
   severity:
     description: Comma-separated severity levels to scan
@@ -135,8 +135,23 @@ runs:
 
         if [ "${{ inputs.fail-on-critical }}" = "true" ] && [ "${CRITICAL_COUNT:-0}" -gt 0 ]; then
           echo "::error::Pipeline failed: $CRITICAL_COUNT CRITICAL vulnerabilities found in $IMAGE"
-          rm -f "$TRIVY_REPORT"
           exit 1
         fi
 
-        rm -f "$TRIVY_REPORT"
+    # Report is a convenience copy only. It must never fail the calling pipeline
+    # (the org Actions budget/artifact quota can be exhausted at any time) and is
+    # kept for 1 day so it does not consume artifact storage.
+    - name: Upload Trivy Report
+      if: always()
+      continue-on-error: true
+      uses: actions/upload-artifact@v4
+      with:
+        name: trivy-report-${{ inputs.service-name }}
+        path: /tmp/trivy-report-*.json
+        if-no-files-found: ignore
+        retention-days: 1
+
+    - name: Remove Trivy report
+      if: always()
+      shell: bash
+      run: rm -f /tmp/trivy-report-*.json
