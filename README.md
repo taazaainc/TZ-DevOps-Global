@@ -228,7 +228,7 @@ github-restrictions:
 
 ### trivy-scan
 
-Scans a pre-built Docker image for vulnerabilities. Uploads JSON report as a workflow artifact.
+Scans a pre-built Docker image for vulnerabilities. Uploads the JSON report as a best-effort workflow artifact kept for 1 day (an upload failure never fails the pipeline).
 
 **Inputs:**
 
