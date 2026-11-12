@@ -78,7 +78,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-      run: bash "${{ github.action_path }}/../../../scripts/install-tool.sh" trivy
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/install-tool.sh" trivy
 
     - name: Scan image
       id: scan
@@ -94,6 +94,7 @@ runs:
         MISCONFIG: ${{ inputs.misconfig }}
         SCAN_PATH: ${{ inputs.scan-path }}
         MAX_DB_AGE_HOURS: ${{ inputs.max-db-age-hours }}
-        POLICY_DIR: ${{ github.action_path }}/../../../policy/trivy
-        WORKSPACE: ${{ github.workspace }}
-      run: bash "${{ github.action_path }}/../../../scripts/trivy-scan.sh"
+      # GITHUB_ACTION_PATH / GITHUB_WORKSPACE are mapped into job containers; the ${{ github.* }} expressions are host paths
+      run: |
+        export POLICY_DIR="$GITHUB_ACTION_PATH/../../../policy/trivy" WORKSPACE="$GITHUB_WORKSPACE"
+        bash "$GITHUB_ACTION_PATH/../../../scripts/trivy-scan.sh"

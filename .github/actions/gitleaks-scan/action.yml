@@ -34,7 +34,7 @@ runs:
       shell: bash
       env:
         GH_TOKEN: ${{ github.token }}
-      run: bash "${{ github.action_path }}/../../../scripts/install-tool.sh" gitleaks
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/install-tool.sh" gitleaks
 
     - name: Scan pull request
       id: scan
@@ -49,8 +49,8 @@ runs:
         REPO: ${{ github.repository }}
         MODE: ${{ inputs.fail-on-secrets == 'true' && 'block' || 'warn' }}
         SERVICE: ${{ inputs.service-name }}
-        CONFIG: ${{ github.action_path }}/.gitleaks.toml
-        POLICY_DIR: ${{ github.action_path }}/../../../policy/gitleaks
-        WORKSPACE: ${{ github.workspace }}
         GH_TOKEN: ${{ github.token }}
-      run: bash "${{ github.action_path }}/../../../scripts/gitleaks-pr-scan.sh"
+      # GITHUB_ACTION_PATH / GITHUB_WORKSPACE are mapped into job containers; the ${{ github.* }} expressions are host paths
+      run: |
+        export CONFIG="$GITHUB_ACTION_PATH/.gitleaks.toml" POLICY_DIR="$GITHUB_ACTION_PATH/../../../policy/gitleaks" WORKSPACE="$GITHUB_WORKSPACE"
+        bash "$GITHUB_ACTION_PATH/../../../scripts/gitleaks-pr-scan.sh"
