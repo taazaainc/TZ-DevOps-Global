@@ -1,120 +1,56 @@
 name: GitLeaks Secret Scanning
 description: >
-  Scans the repository source code for leaked secrets using GitLeaks.
-  The JSON report is scratch-only (used to count findings for this run) and
-  is not uploaded or stored anywhere, so it never counts against the org's
-  Actions artifact storage quota. Does NOT fail the pipeline on findings by
-  default — set fail-on-secrets to 'true' to make it blocking.
+  Scans the commits of a pull request for secrets with Gitleaks. Latest push only on later pushes
+  (whole PR when it is first opened or after a force-push), plus a check of the PR's net change.
+  The Gitleaks version, config and ignore list are all central (this repo); nothing is read from the
+  scanned repo. Fails closed when the tool cannot run. Block or warn is set with fail-on-secrets.
 
 inputs:
-  gitleaks-version:
-    description: GitLeaks binary version to download
-    required: false
-    default: "8.22.1"
-  fail-on-secrets:
-    description: Set to 'true' to fail the pipeline when secrets are found
-    required: false
-    default: "false"
   service-name:
-    description: Service name used for artifact naming (e.g. Assessment, CarePlan)
+    description: Service name, used in messages
     required: true
-  config-file:
-    description: Path to .gitleaks.toml config file relative to repo root (optional)
+  fail-on-secrets:
+    description: "'true' blocks the pipeline when secrets are found (default); 'false' only warns"
     required: false
-    default: ".gitleaks.toml"
+    default: "true"
+  gitleaks-version:
+    description: DEPRECATED and ignored. The version comes from policy/tool-versions.env
+    required: false
+    default: ""
+  config-file:
+    description: DEPRECATED and ignored. A repo-local config would let a PR allowlist its own secrets
+    required: false
+    default: ""
 
 outputs:
   secret-count:
-    description: Number of secrets found
+    description: Number of potential secrets found
     value: ${{ steps.scan.outputs.secret_count }}
 
 runs:
   using: composite
   steps:
-    - name: GitLeaks Secret Scanning
+    - name: Install gitleaks (per job, verified)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/../../../scripts/install-tool.sh" gitleaks
+
+    - name: Scan pull request
       id: scan
       shell: bash
-      run: |
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "🔐 GitLeaks Secret Scanning"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-
-        SERVICE_NAME_SAFE=$(echo "${{ inputs.service-name }}" | tr ' ' '-' | tr '/' '-')
-        GITLEAKS_REPORT="/tmp/gitleaks-report-${SERVICE_NAME_SAFE}.json"
-        GITLEAKS_VERSION="${{ inputs.gitleaks-version }}"
-
-        echo "Service: ${{ inputs.service-name }}"
-        echo "Scanning source code for secrets..."
-        echo ""
-
-        # Download gitleaks binary if not cached
-        if [ ! -f "/tmp/gitleaks" ]; then
-          echo "Downloading GitLeaks v${GITLEAKS_VERSION}..."
-          wget -q "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            -O /tmp/gitleaks.tar.gz
-          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
-          chmod +x /tmp/gitleaks
-          rm /tmp/gitleaks.tar.gz
-        fi
-
-        # Resolve config: prefer repo-local file, fall back to global config bundled with this action
-        LOCAL_CONFIG="${GITHUB_WORKSPACE}/${{ inputs.config-file }}"
-        GLOBAL_CONFIG="${{ github.action_path }}/.gitleaks.toml"
-
-        if [ -f "$LOCAL_CONFIG" ]; then
-          CONFIG_FILE="$LOCAL_CONFIG"
-          echo "Using repo-local config: $CONFIG_FILE"
-        elif [ -f "$GLOBAL_CONFIG" ]; then
-          CONFIG_FILE="$GLOBAL_CONFIG"
-          echo "Using global config from TZ-DevOps-Global: $CONFIG_FILE"
-        else
-          CONFIG_FILE=""
-          echo "No config file found — using gitleaks defaults"
-        fi
-
-        if [ -n "$CONFIG_FILE" ]; then
-          /tmp/gitleaks detect \
-            --source "$GITHUB_WORKSPACE" \
-            --no-git \
-            --config "$CONFIG_FILE" \
-            --report-path "$GITLEAKS_REPORT" \
-            --report-format json \
-            --exit-code 0 || true
-        else
-          /tmp/gitleaks detect \
-            --source "$GITHUB_WORKSPACE" \
-            --no-git \
-            --report-path "$GITLEAKS_REPORT" \
-            --report-format json \
-            --exit-code 0 || true
-        fi
-
-        echo ""
-        echo "GitLeaks scan completed"
-
-        SECRET_COUNT=0
-        if [ -f "$GITLEAKS_REPORT" ]; then
-          SECRET_COUNT=$(jq 'length' "$GITLEAKS_REPORT" 2>/dev/null || echo "0")
-          if [ "$SECRET_COUNT" -gt 0 ]; then
-            echo "⚠️  Found $SECRET_COUNT potential secret(s):"
-            jq -r '.[] | "  - \(.RuleID) in \(.File):\(.StartLine)"' "$GITLEAKS_REPORT" 2>/dev/null | head -20 || true
-            if [ "$SECRET_COUNT" -gt 20 ]; then
-              echo "  ... and $((SECRET_COUNT - 20)) more"
-            fi
-          else
-            echo "✅ No secrets detected"
-          fi
-        else
-          echo "⚠️  No report generated"
-          echo "[]" > "$GITLEAKS_REPORT"
-        fi
-
-        echo "secret_count=$SECRET_COUNT" >> $GITHUB_OUTPUT
-
-        if [ "${{ inputs.fail-on-secrets }}" = "true" ] && [ "$SECRET_COUNT" -gt 0 ]; then
-          echo "::error::Pipeline failed: $SECRET_COUNT secret(s) detected by GitLeaks"
-          rm -f "$GITLEAKS_REPORT"
-          exit 1
-        fi
-
-        rm -f "$GITLEAKS_REPORT"
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        PR_ACTION: ${{ github.event.action }}
+        BEFORE_SHA: ${{ github.event.before }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        REPO: ${{ github.repository }}
+        MODE: ${{ inputs.fail-on-secrets == 'true' && 'block' || 'warn' }}
+        SERVICE: ${{ inputs.service-name }}
+        CONFIG: ${{ github.action_path }}/.gitleaks.toml
+        POLICY_DIR: ${{ github.action_path }}/../../../policy/gitleaks
+        WORKSPACE: ${{ github.workspace }}
+        GH_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/../../../scripts/gitleaks-pr-scan.sh"

@@ -1,0 +1,5 @@
+# Default Gitleaks ignore list (used when a repo has no folder of its own). Intentionally empty.
+# Per-repo list: policy/gitleaks/<owner>__<repo>/.gitleaksignore  (one fingerprint per line).
+# Fingerprint format is the one gitleaks prints in its report: <commit>:<file>:<rule>:<line>
+# Add a comment line above each fingerprint with: reason, requester, ticket, expiry date.
+# Only add an entry after the secret has been ROTATED.

@@ -142,6 +142,8 @@ jobs:
       SONAR_JAVA_IMAGE: ${{ inputs.sonar_java_image }}
       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+      # unique per repo run, attempt and matrix job: shared Docker daemons must never mix up scan images
+      SCAN_IMAGE_TAG: scan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
 
     container:
       image: ${{ inputs.base_container_image }}
@@ -158,12 +160,10 @@ jobs:
           if [ -S /var/run/docker.sock ]; then
             chmod 666 /var/run/docker.sock
           fi
-
       - name: Checkout code
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
       - name: Verify Environment
         run: |
           echo "=== Environment Check ==="
@@ -178,22 +178,97 @@ jobs:
           echo "Installed Tools:"
           dotnet tool list --global
           echo ""
+      # Gitleaks runs FIRST, on the clean checkout (before the pre-build hook adds files) and whether or
+      # not anything else has failed. Latest push on later pushes; whole PR when first opened.
+      - name: GitLeaks Secret Scanning
+        if: ${{ !cancelled() }}
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/gitleaks-scan@master
+        with:
+          service-name: ${{ matrix.service.name }}
+          # Org-wide default is 'true' (block). A repo bypasses it only by passing fail-on-secrets: 'false'.
+          fail-on-secrets: ${{ inputs.fail-on-secrets || 'true' }}
+      - name: Run Pre-Build Hook
+        if: ${{ !cancelled() }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.PRE_BUILD_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.PRE_BUILD_AWS_SECRET_ACCESS_KEY }}
+        shell: bash
+        run: |
+          PRE_BUILD=$(jq -r '.pre_build_script // empty' <<< '${{ toJson(matrix.service) }}')
+          if [ -n "$PRE_BUILD" ] && [ -f "$PRE_BUILD" ]; then
+            echo "Running pre-build hook: $PRE_BUILD"
+            bash "$PRE_BUILD"
+          else
+            echo "No pre_build_script defined -- skipping."
+          fi
+      - name: Docker Build for Trivy Scan
+        if: ${{ !cancelled() }}
+        id: build
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE_DIR
+          export IMAGE_TAG="$SCAN_IMAGE_TAG"   # unique per repo, run, attempt and matrix job
+          export IMAGE_NAME=${{ matrix.service.image_name }}
 
+          echo "Building Docker image: $IMAGE_NAME:$IMAGE_TAG"
+
+          # Construct build command with arguments
+          BUILD_CMD="docker build -t $IMAGE_NAME:$IMAGE_TAG"
+          BUILD_CMD="$BUILD_CMD -f ${{ matrix.service.dockerfile }}"
+
+          # Add build arguments if they exist
+          if jq -e '.build_args' <<< '${{ toJson(matrix.service) }}' > /dev/null 2>&1; then
+            for key in $(jq -r '.build_args[]' <<< '${{ toJson(matrix.service) }}'); do
+              value=$(jq -r --arg k "$key" '.build_arg_values[$k].qa // .build_arg_values[$k].dev // ""' <<< '${{ toJson(matrix.service) }}')
+              if [ -n "$value" ]; then
+                BUILD_CMD="$BUILD_CMD --build-arg $key=\"$value\""
+              fi
+            done
+          fi
+
+          BUILD_CMD="$BUILD_CMD ${{ matrix.service.context_path }}"
+
+          echo "Executing: $BUILD_CMD"
+          eval "$BUILD_CMD"
+      # Trivy runs after the build and whether or not Gitleaks/earlier steps failed. Sonar comes after it,
+      # so a Sonar failure can never hide a security result.
+      - name: Trivy Security Scan
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/trivy-scan@master
+        with:
+          image-name: ${{ matrix.service.image_name }}:${{ env.SCAN_IMAGE_TAG }}
+          service-name: ${{ matrix.service.name }}
+          scan-path: ${{ matrix.service.context_path || '.' }}
+          # Org-wide default is 'true' (block). A repo bypasses it only by passing fail-on-critical: 'false'.
+          fail-on-critical: ${{ inputs.fail-on-critical || 'true' }}
+      - name: Post-Build Cleanup
+        if: always()
+        env:
+          PHASE: cleanup
+        shell: bash
+        run: |
+          PRE_BUILD=$(jq -r '.pre_build_script // empty' <<< '${{ toJson(matrix.service) }}')
+          if [ -n "$PRE_BUILD" ] && [ -f "$PRE_BUILD" ]; then
+            bash "$PRE_BUILD"
+          else
+            echo "No pre_build_script defined -- skipping cleanup."
+          fi
       # .NET Service Scanning (all services except UI with scanner_type: 'nodejs')
       - name: Add Missing Test Packages
-        if: ${{ !matrix.service.scanner_type }}
+        id: dn_pkgs
+        if: ${{ !cancelled() && (!matrix.service.scanner_type) }}
         run: bash /scripts/add-missing-packages.sh
-
       - name: Run SonarQube Build, Test & Analysis
-        if: ${{ !matrix.service.scanner_type }}
+        id: dn_run
+        if: ${{ !cancelled() && (!matrix.service.scanner_type) && steps.dn_pkgs.outcome == 'success' }}
         run: bash /scripts/dotnet-build-test-sonarqube.sh
-
       - name: Wait for SonarQube Processing
-        if: ${{ !matrix.service.scanner_type }}
+        id: dn_wait
+        if: ${{ !cancelled() && (!matrix.service.scanner_type) && steps.dn_run.outcome == 'success' }}
         run: sleep 30
-
       - name: SonarQube Quality Gate Check
-        if: ${{ !matrix.service.scanner_type }}
+        id: dn_gate
+        if: ${{ !cancelled() && (!matrix.service.scanner_type) && steps.dn_wait.outcome == 'success' }}
         run: |
           max_attempts=30
           attempt=0
@@ -228,10 +303,10 @@ jobs:
 
           echo "⚠️ Quality Gate check timeout"
           exit 1
-
       # Node.js Scanning only for UI service (scanner_type: 'nodejs')
       - name: SonarQube Scan for Node.js/UI
-        if: ${{ matrix.service.scanner_type == 'nodejs' }}
+        id: node_scan
+        if: ${{ !cancelled() && (matrix.service.scanner_type == 'nodejs') }}
         continue-on-error: true
         run: |
           docker run --rm \
@@ -244,13 +319,13 @@ jobs:
                           -Dsonar.verbose=true" \
             -v "${{ github.workspace }}:/usr/src" \
             $SONAR_NODEJS_IMAGE
-
       - name: Wait for SonarQube Processing (Node.js)
-        if: ${{ matrix.service.scanner_type == 'nodejs' }}
+        id: node_wait
+        if: ${{ !cancelled() && (matrix.service.scanner_type == 'nodejs') && steps.node_scan.conclusion == 'success' }}
         run: sleep 30
-
       - name: SonarQube Quality Gate Check (Node.js)
-        if: ${{ matrix.service.scanner_type == 'nodejs' }}
+        id: node_gate
+        if: ${{ !cancelled() && (matrix.service.scanner_type == 'nodejs') && steps.node_wait.outcome == 'success' }}
         run: |
           max_attempts=30
           attempt=0
@@ -285,17 +360,17 @@ jobs:
 
           echo "⚠️ Quality Gate check timeout"
           exit 1
-
       # Java Service Scanning (scanner_type: 'java')
       - name: Pull Java SonarQube Image
-        if: ${{ matrix.service.scanner_type == 'java' }}
+        id: java_pull
+        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') }}
         run: |
           JAVA_IMAGE=$(printf '%s' "$SONAR_JAVA_IMAGE" | tr -d '[:space:]')
           echo "Pulling image: $JAVA_IMAGE"
           docker pull "$JAVA_IMAGE"
-
       - name: SonarQube Scan for Java
-        if: ${{ matrix.service.scanner_type == 'java' }}
+        id: java_scan
+        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') && steps.java_pull.outcome == 'success' }}
         run: |
           JAVA_IMAGE=$(printf '%s' "$SONAR_JAVA_IMAGE" | tr -d '[:space:]')
           docker run --rm \
@@ -308,13 +383,13 @@ jobs:
             -e SONAR_PROJECT_VERSION="${{ github.head_ref || github.ref_name }}-${{ github.run_number }}" \
             -v "${{ github.workspace }}:/usr/src" \
             "$JAVA_IMAGE"
-
       - name: Wait for SonarQube Processing (Java)
-        if: ${{ matrix.service.scanner_type == 'java' }}
+        id: java_wait
+        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') && steps.java_scan.outcome == 'success' }}
         run: sleep 30
-
       - name: SonarQube Quality Gate Check (Java)
-        if: ${{ matrix.service.scanner_type == 'java' }}
+        id: java_gate
+        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') && steps.java_wait.outcome == 'success' }}
         run: |
           max_attempts=30
           attempt=0
@@ -339,103 +414,16 @@ jobs:
 
           echo "⚠️ Quality Gate check timeout. Last response: $response"
           exit 1
-
-      - name: Run Pre-Build Hook
-        if: success()
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.PRE_BUILD_AWS_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.PRE_BUILD_AWS_SECRET_ACCESS_KEY }}
-        shell: bash
-        run: |
-          PRE_BUILD=$(jq -r '.pre_build_script // empty' <<< '${{ toJson(matrix.service) }}')
-          if [ -n "$PRE_BUILD" ] && [ -f "$PRE_BUILD" ]; then
-            echo "Running pre-build hook: $PRE_BUILD"
-            bash "$PRE_BUILD"
-          else
-            echo "No pre_build_script defined -- skipping."
-          fi
-
-      - name: Docker Build for Trivy Scan
-        if: success()
-        shell: bash
-        run: |
-          cd $GITHUB_WORKSPACE_DIR
-          export IMAGE_TAG=test-${{ github.run_number }}
-          export IMAGE_NAME=${{ matrix.service.image_name }}
-
-          echo "Building Docker image: $IMAGE_NAME:$IMAGE_TAG"
-
-          # Construct build command with arguments
-          BUILD_CMD="docker build -t $IMAGE_NAME:$IMAGE_TAG"
-          BUILD_CMD="$BUILD_CMD -f ${{ matrix.service.dockerfile }}"
-
-          # Add build arguments if they exist
-          if jq -e '.build_args' <<< '${{ toJson(matrix.service) }}' > /dev/null 2>&1; then
-            for key in $(jq -r '.build_args[]' <<< '${{ toJson(matrix.service) }}'); do
-              value=$(jq -r --arg k "$key" '.build_arg_values[$k].qa // .build_arg_values[$k].dev // ""' <<< '${{ toJson(matrix.service) }}')
-              if [ -n "$value" ]; then
-                BUILD_CMD="$BUILD_CMD --build-arg $key=\"$value\""
-              fi
-            done
-          fi
-
-          BUILD_CMD="$BUILD_CMD ${{ matrix.service.context_path }}"
-
-          echo "Executing: $BUILD_CMD"
-          eval "$BUILD_CMD"
-          docker tag $IMAGE_NAME:$IMAGE_TAG $IMAGE_NAME:latest
-
-      - name: Trivy Security Scan
-        if: success()
-        uses: taazaainc/TZ-DevOps-Global/.github/actions/trivy-scan@master
-        with:
-          image-name: ${{ matrix.service.image_name }}:test-${{ github.run_number }}
-          service-name: ${{ matrix.service.name }}
-          trivy-image: ${{ vars.TRIVY_IMAGE || 'aquasec/trivy:latest' }}
-          registry-username: ${{ secrets.TCR_USERNAME }}
-          registry-password: ${{ secrets.TCR_PASSWORD }}
-          # ── Centralized control ─────────────────────────────────────────────
-          # Org-wide default is 'true' — pipeline blocks on CRITICAL CVEs.
-          # To disable org-wide: change the default in the input declaration above (line ~44).
-          # To bypass for one specific repo: that repo passes fail-on-critical: 'false' in its caller.
-          fail-on-critical: ${{ inputs.fail-on-critical || 'true' }}
-
-      - name: Post-Build Cleanup
-        if: success()
-        env:
-          PHASE: cleanup
-        shell: bash
-        run: |
-          PRE_BUILD=$(jq -r '.pre_build_script // empty' <<< '${{ toJson(matrix.service) }}')
-          if [ -n "$PRE_BUILD" ] && [ -f "$PRE_BUILD" ]; then
-            bash "$PRE_BUILD"
-          else
-            echo "No pre_build_script defined -- skipping cleanup."
-          fi
-
-      - name: GitLeaks Secret Scanning
-        if: success()
-        uses: taazaainc/TZ-DevOps-Global/.github/actions/gitleaks-scan@master
-        with:
-          service-name: ${{ matrix.service.name }}
-          # ── Centralized control ─────────────────────────────────────────────
-          # Org-wide default is 'true' — pipeline blocks when secrets are detected.
-          # To disable org-wide: change the default in the input declaration above (line ~52).
-          # To bypass for one specific repo: that repo passes fail-on-secrets: 'false' in its caller.
-          fail-on-secrets: ${{ inputs.fail-on-secrets || 'true' }}
-
       - name: Cleanup Docker Images
         if: always()
         run: |
-          IMAGE_TAG=test-${{ github.run_number }}
+          IMAGE_TAG="$SCAN_IMAGE_TAG"
           IMAGE_NAME=${{ matrix.service.image_name }}
 
           echo "Cleaning up images for this job only..."
           docker rmi "${IMAGE_NAME}:${IMAGE_TAG}" 2>/dev/null || echo "Image ${IMAGE_NAME}:${IMAGE_TAG} already removed"
-          docker rmi "${IMAGE_NAME}:latest" 2>/dev/null || echo "Image ${IMAGE_NAME}:latest already removed"
 
           echo "Cleanup complete"
-
       - name: Cleanup root-owned workspace artifacts
         if: always()
         run: |
@@ -448,7 +436,6 @@ jobs:
           find "$GITHUB_WORKSPACE" -name "obj" -type d -exec rm -rf {} + 2>/dev/null || true
           find "$GITHUB_WORKSPACE" -name "TestResults" -type d -exec rm -rf {} + 2>/dev/null || true
           echo "Workspace artifact cleanup complete"
-
       - name: Cleanup home package caches
         if: always()
         run: |

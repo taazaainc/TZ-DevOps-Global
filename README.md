@@ -79,7 +79,7 @@ Multiple changeset paths (comma-separated):
 
 ### code-quality-security
 
-Runs SonarQube analysis, Trivy container scan, and GitLeaks secret scan for each changed service in parallel (matrix). Includes a stable `Scan Summary` job suitable for use as a required branch ruleset check.
+Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each changed service (matrix). **Order: GitLeaks, then Trivy, then Sonar.** Each security scan runs even if an earlier step failed, so a failing Sonar can never hide a secret or vulnerability result; the job still ends red if any step failed. Includes a stable `Scan Summary` job suitable for use as a required branch ruleset check.
 
 **Inputs:**
 
@@ -101,7 +101,7 @@ Runs SonarQube analysis, Trivy container scan, and GitLeaks secret scan for each
 | `TCR_USERNAME` | Container registry username (for pulling build container + Trivy image) |
 | `TCR_PASSWORD` | Container registry password |
 
-**Trivy image:** Read from `vars.TRIVY_IMAGE` in the calling repo (or org-level variable). Falls back to `aquasec/trivy:latest` if not set. Set this variable to a private registry mirror to avoid Docker Hub rate limits.
+**Tool versions and exceptions are central:** Gitleaks and Trivy are installed fresh in every job from `policy/tool-versions.env` (newest stable release older than the cooldown, checksum verified). Ignore lists live in `policy/` (see `policy/README.md`). `vars.TRIVY_IMAGE` is no longer used.
 
 **variables.json — additional fields for scanning:**
 ```json
@@ -160,7 +160,7 @@ fail-on-critical: ${{ inputs.fail-on-critical || 'true' }}
 fail-on-secrets: ${{ inputs.fail-on-secrets || 'true' }}
 ```
 
-Effect: All repos stop being blocked by Trivy CRITICALs / GitLeaks secrets. Scans still run and upload reports, but pipeline does not fail.
+Effect: All repos stop being blocked by Trivy CRITICALs / GitLeaks secrets. Scans still run and are reported in the job log and summary, but the pipeline does not fail.
 
 **Option B — Bypass for ONE specific repo only:**
 
@@ -228,46 +228,58 @@ github-restrictions:
 
 ### trivy-scan
 
-Scans a pre-built Docker image for vulnerabilities. Uploads JSON report as a workflow artifact.
+Scans a pre-built **local** Docker image with Trivy. Fails closed. Settings, version and ignore list are central; nothing is read from the scanned repo.
+
+- Vulnerability database is downloaded in the job; the job fails if the download fails or the DB is older than `max-db-age-hours`.
+- Blocks on **fixable** CRITICAL and HIGH vulnerabilities (`gate-severity`) and on secrets baked into the image (`image-secrets`). Unfixed findings are listed but do not block.
+- Also reports dependency vulnerabilities from the repo's lock files (`fs-scan`) and Dockerfile / Helm / Kubernetes configuration issues (`misconfig`).
+- Ignore list: `policy/trivy/<owner>__<repo>.trivyignore.yaml` (entries need an expiry date).
+- Use an image tag that is unique per job (the reusable workflow uses `scan-<run id>-<attempt>-<job index>`).
 
 **Inputs:**
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `image-name` | Yes | — | Full image name with tag |
-| `service-name` | Yes | — | Used for artifact naming |
-| `trivy-image` | No | `aquasec/trivy:latest` | Trivy Docker image. Use private mirror to avoid rate limits. |
-| `registry-username` | No | — | Registry credentials to pull trivy image |
-| `registry-password` | No | — | Registry credentials to pull trivy image |
-| `severity` | No | `CRITICAL,HIGH,MEDIUM` | Severity levels to scan |
-| `fail-on-critical` | No | `false` | Fail pipeline on CRITICAL findings |
+| `image-name` | Yes | — | Full local image name with tag |
+| `service-name` | Yes | — | Used in messages |
+| `fail-on-critical` | No | `true` | `true` blocks, `false` only warns (name kept for compatibility) |
+| `gate-severity` | No | `CRITICAL,HIGH` | Severities that block (fixable findings only) |
+| `image-secrets` | No | `block` | `off` / `report` / `block` |
+| `fs-scan` | No | `report` | `off` / `report` / `block` |
+| `misconfig` | No | `report` | `off` / `report` |
+| `scan-path` | No | `.` | Folder in the workspace for the repo scans |
+| `max-db-age-hours` | No | `48` | Fail if the database is older |
+| `severity`, `trivy-image`, `registry`, `registry-username`, `registry-password` | No | — | **Deprecated, ignored** |
 
 **Example:**
 ```yaml
 - name: Trivy Security Scan
   uses: taazaainc/TZ-DevOps-Global/.github/actions/trivy-scan@master
   with:
-    image-name: "${{ env.IMAGE_NAME }}:test-${{ github.run_number }}"
+    image-name: "${{ matrix.service.image_name }}:${{ env.SCAN_IMAGE_TAG }}"
     service-name: ${{ matrix.service.name }}
-    trivy-image: ${{ vars.TRIVY_IMAGE || 'aquasec/trivy:latest' }}
-    registry-username: ${{ secrets.TCR_USERNAME }}
-    registry-password: ${{ secrets.TCR_PASSWORD }}
+    scan-path: ${{ matrix.service.context_path || '.' }}
 ```
 
 ---
 
 ### gitleaks-scan
 
-Scans the repository for leaked secrets using GitLeaks.
+Scans the commits of a pull request for secrets. Fails closed. Version, config and ignore list are central; a repo-local `.gitleaks.toml`, `.gitleaksignore` or inline `gitleaks:allow` is not accepted.
+
+- First scan of a PR (opened, reopened, or after a force-push): the whole PR (`base..head`).
+- Later pushes: only the commits of that push, so a secret that was found, fixed and pushed again does not block twice.
+- Every run also scans the files the PR changes (net change), so nothing unscanned can be merged.
+- When a secret is found: **rotate it first**; removing it from the file does not undo the exposure.
+- Ignore list: `policy/gitleaks/<owner>__<repo>/.gitleaksignore` (add only after the secret is rotated).
 
 **Inputs:**
 
 | Input | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `service-name` | Yes | — | Used for artifact naming |
-| `gitleaks-version` | No | `8.22.1` | GitLeaks version to download |
-| `fail-on-secrets` | No | `false` | Fail pipeline when secrets are found |
-| `config-file` | No | — | Path to `.gitleaks.toml` config (uses global config if not set) |
+| `service-name` | Yes | — | Used in messages |
+| `fail-on-secrets` | No | `true` | `true` blocks, `false` only warns |
+| `gitleaks-version`, `config-file` | No | — | **Deprecated, ignored** (version and config are central) |
 
 **Example:**
 ```yaml
