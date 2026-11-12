@@ -1,0 +1,38 @@
+name: SonarQube Quality Gate Check
+description: >
+  Checks the quality gate of THIS run's Sonar analysis: waits for the analysis task the scanner just
+  submitted (not a fixed sleep), then reads the gate of that exact analysis. Fails closed when the
+  report, the task or the gate result is missing or unknown. Needs SONAR_TOKEN (and SONAR_HOST_URL)
+  in the job environment.
+
+inputs:
+  project-key:
+    description: Sonar project key of the scanned service
+    required: true
+  service-name:
+    description: Service name, used in messages
+    required: false
+    default: ""
+  timeout-seconds:
+    description: Maximum time to wait for Sonar to finish processing the report
+    required: false
+    default: "600"
+  fail-on-gate:
+    description: "'true' blocks when the gate fails or is unknown (default); 'false' only warns"
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Check quality gate
+      shell: bash
+      env:
+        PROJECT_KEY: ${{ inputs.project-key }}
+        SERVICE: ${{ inputs.service-name }}
+        TIMEOUT_SEC: ${{ inputs.timeout-seconds }}
+        MODE: ${{ inputs.fail-on-gate == 'true' && 'block' || 'warn' }}
+        WORKSPACE: ${{ github.workspace }}
+      run: |
+        export START_MARKER="${RUNNER_TEMP}/sonar-start"
+        bash "${{ github.action_path }}/../../../scripts/sonar-quality-gate.sh"

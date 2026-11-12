@@ -254,6 +254,11 @@ jobs:
             echo "No pre_build_script defined -- skipping cleanup."
           fi
       # .NET Service Scanning (all services except UI with scanner_type: 'nodejs')
+      # Marks the start of the Sonar work, so the quality gate check only accepts a report written after it.
+      - name: Mark Sonar start
+        if: ${{ !cancelled() }}
+        run: touch "$RUNNER_TEMP/sonar-start"
+
       - name: Add Missing Test Packages
         id: dn_pkgs
         if: ${{ !cancelled() && (!matrix.service.scanner_type) }}
@@ -262,48 +267,15 @@ jobs:
         id: dn_run
         if: ${{ !cancelled() && (!matrix.service.scanner_type) && steps.dn_pkgs.outcome == 'success' }}
         run: bash /scripts/dotnet-build-test-sonarqube.sh
-      - name: Wait for SonarQube Processing
-        id: dn_wait
-        if: ${{ !cancelled() && (!matrix.service.scanner_type) && steps.dn_run.outcome == 'success' }}
-        run: sleep 30
       - name: SonarQube Quality Gate Check
         id: dn_gate
-        if: ${{ !cancelled() && (!matrix.service.scanner_type) && steps.dn_wait.outcome == 'success' }}
-        run: |
-          max_attempts=30
-          attempt=0
+        if: ${{ !cancelled() && (!matrix.service.scanner_type) && steps.dn_run.outcome == 'success' }}
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/sonar-quality-gate@master
+        with:
+          project-key: ${{ matrix.service.sonar_key }}
+          service-name: ${{ matrix.service.name }}
+          # waits for THIS analysis to finish (not a fixed sleep) and reads the gate of that analysis
 
-          while [ $attempt -lt $max_attempts ]; do
-            response=$(curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}")
-            status=$(echo "$response" | jq -r '.projectStatus.status' 2>/dev/null || echo "PARSE_ERROR")
-
-            if [ "$status" = "PARSE_ERROR" ]; then
-              echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
-              sleep 10
-              attempt=$((attempt+1))
-              continue
-            fi
-
-            if [ "$status" != "NONE" ] && [ "$status" != "null" ]; then
-              echo "Quality Gate Status: $status"
-              if [ "$status" = "OK" ]; then
-                echo "✅ Quality Gate Passed!"
-                exit 0
-              elif [ "$status" = "ERROR" ]; then
-                echo "❌ Quality Gate Failed!"
-                echo "Details: $response"
-                exit 1
-              fi
-            fi
-
-            echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
-            sleep 10
-            attempt=$((attempt+1))
-          done
-
-          echo "⚠️ Quality Gate check timeout"
-          exit 1
-      # Node.js Scanning only for UI service (scanner_type: 'nodejs')
       - name: SonarQube Scan for Node.js/UI
         id: node_scan
         if: ${{ !cancelled() && (matrix.service.scanner_type == 'nodejs') }}
@@ -319,48 +291,15 @@ jobs:
                           -Dsonar.verbose=true" \
             -v "${{ github.workspace }}:/usr/src" \
             $SONAR_NODEJS_IMAGE
-      - name: Wait for SonarQube Processing (Node.js)
-        id: node_wait
-        if: ${{ !cancelled() && (matrix.service.scanner_type == 'nodejs') && steps.node_scan.conclusion == 'success' }}
-        run: sleep 30
       - name: SonarQube Quality Gate Check (Node.js)
         id: node_gate
-        if: ${{ !cancelled() && (matrix.service.scanner_type == 'nodejs') && steps.node_wait.outcome == 'success' }}
-        run: |
-          max_attempts=30
-          attempt=0
+        if: ${{ !cancelled() && (matrix.service.scanner_type == 'nodejs') && steps.node_scan.conclusion == 'success' }}
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/sonar-quality-gate@master
+        with:
+          project-key: ${{ matrix.service.sonar_key }}
+          service-name: ${{ matrix.service.name }}
+          # waits for THIS analysis to finish (not a fixed sleep) and reads the gate of that analysis
 
-          while [ $attempt -lt $max_attempts ]; do
-            response=$(curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}")
-            status=$(echo "$response" | jq -r '.projectStatus.status' 2>/dev/null || echo "PARSE_ERROR")
-
-            if [ "$status" = "PARSE_ERROR" ]; then
-              echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
-              sleep 10
-              attempt=$((attempt+1))
-              continue
-            fi
-
-            if [ "$status" != "NONE" ] && [ "$status" != "null" ]; then
-              echo "Quality Gate Status: $status"
-              if [ "$status" = "OK" ]; then
-                echo "✅ Quality Gate Passed!"
-                exit 0
-              elif [ "$status" = "ERROR" ]; then
-                echo "❌ Quality Gate Failed!"
-                echo "Details: $response"
-                exit 1
-              fi
-            fi
-
-            echo "⏳ Waiting for SonarQube analysis... (attempt $((attempt+1))/$max_attempts)"
-            sleep 10
-            attempt=$((attempt+1))
-          done
-
-          echo "⚠️ Quality Gate check timeout"
-          exit 1
-      # Java Service Scanning (scanner_type: 'java')
       - name: Pull Java SonarQube Image
         id: java_pull
         if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') }}
@@ -383,37 +322,15 @@ jobs:
             -e SONAR_PROJECT_VERSION="${{ github.head_ref || github.ref_name }}-${{ github.run_number }}" \
             -v "${{ github.workspace }}:/usr/src" \
             "$JAVA_IMAGE"
-      - name: Wait for SonarQube Processing (Java)
-        id: java_wait
-        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') && steps.java_scan.outcome == 'success' }}
-        run: sleep 30
       - name: SonarQube Quality Gate Check (Java)
         id: java_gate
-        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') && steps.java_wait.outcome == 'success' }}
-        run: |
-          max_attempts=30
-          attempt=0
+        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') && steps.java_scan.outcome == 'success' }}
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/sonar-quality-gate@master
+        with:
+          project-key: ${{ matrix.service.sonar_key }}
+          service-name: ${{ matrix.service.name }}
+          # waits for THIS analysis to finish (not a fixed sleep) and reads the gate of that analysis
 
-          while [ $attempt -lt $max_attempts ]; do
-            response=$(curl -s -u "${SONAR_TOKEN}:" "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}")
-            status=$(echo "$response" | jq -r '.projectStatus.status' 2>/dev/null || echo "PARSE_ERROR")
-
-            if [ "$status" = "OK" ]; then
-              echo "✅ Quality Gate Passed!"
-              exit 0
-            elif [ "$status" = "ERROR" ]; then
-              echo "❌ Quality Gate Failed!"
-              echo "Details: $response"
-              exit 1
-            fi
-
-            echo "⏳ Waiting for SonarQube analysis... status='$status' (attempt $((attempt+1))/$max_attempts)"
-            sleep 10
-            attempt=$((attempt+1))
-          done
-
-          echo "⚠️ Quality Gate check timeout. Last response: $response"
-          exit 1
       - name: Cleanup Docker Images
         if: always()
         run: |

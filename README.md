@@ -291,6 +291,27 @@ Scans the commits of a pull request for secrets. Fails closed. Version, config a
 
 ---
 
+### sonar-quality-gate
+
+Checks the SonarQube quality gate **of the analysis this run just submitted**. It replaces "sleep 30 seconds, then read the project status", which could return the status of an older analysis while Sonar was still processing the new report.
+
+How it works (same flow as SonarSource's own quality-gate action):
+1. Reads the `report-task.txt` the scanner wrote in this run (must be newer than the job's Sonar start marker, and match the project key).
+2. Polls the background task (`api/ce/task`) until it is `SUCCESS`, `FAILED` or `CANCELED` (default limit 600 s).
+3. Takes the `analysisId` of that task and reads the gate of exactly that analysis (`api/qualitygates/project_status?analysisId=`).
+4. `OK` passes, `WARN` passes with a warning, `ERROR` fails and lists the failed conditions; anything else (no gate on the project, unknown, timeout, missing report, server unreachable) **fails**.
+
+Needs `SONAR_TOKEN` and `SONAR_HOST_URL` in the job environment.
+
+| Input | Required | Default | Description |
+|-------|----------|---------|-------------|
+| `project-key` | Yes | — | Sonar project key of the service |
+| `service-name` | No | — | Used in messages |
+| `timeout-seconds` | No | `600` | Maximum wait for Sonar to process the report |
+| `fail-on-gate` | No | `true` | `false` only warns |
+
+---
+
 ## Variables & Secrets Strategy
 
 | Value | Where to store | Why |
