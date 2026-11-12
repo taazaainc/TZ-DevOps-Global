@@ -27,9 +27,17 @@ esac
 WANT="${2:-$CFG_VER}"
 COOLDOWN_DAYS="${TOOL_COOLDOWN_DAYS:-3}"
 
-api() {
-  curl -fsSL --retry 3 --retry-delay 2 -H "Accept: application/vnd.github+json" \
-    ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} "$@"
+api() {   # GitHub API with back-off: parallel jobs can hit the (secondary) rate limit, which returns 403/429
+  local i out
+  for i in 1 2 3 4 5; do
+    if out="$(curl -fsSL --retry 3 --retry-delay 2 -H "Accept: application/vnd.github+json" \
+                ${GH_TOKEN:+-H "Authorization: Bearer $GH_TOKEN"} "$@")"; then
+      printf '%s' "$out"; return 0
+    fi
+    echo "GitHub API call failed (attempt $i), retrying" >&2
+    sleep $(( i * 6 + RANDOM % 7 ))
+  done
+  return 1
 }
 
 if [ "$WANT" = "latest" ]; then
