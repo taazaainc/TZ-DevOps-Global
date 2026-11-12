@@ -1,0 +1,5 @@
+# Owners of the TZ-DevOps-Global central pipeline repo.
+# Every workflow and action here runs in consumer repos via @master, so changes need a DevOps owner's review.
+# Members must have write access to this repo.
+
+* @manishkumar-tz @sasadharnayak-tz @gulshanchauhan-tz @vishalsharma-tz @vishalsharma1-tz @pawankumar-tz @sheshanshtripathi-tz
