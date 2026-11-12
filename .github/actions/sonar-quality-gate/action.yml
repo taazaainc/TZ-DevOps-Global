@@ -32,7 +32,7 @@ runs:
         SERVICE: ${{ inputs.service-name }}
         TIMEOUT_SEC: ${{ inputs.timeout-seconds }}
         MODE: ${{ inputs.fail-on-gate == 'true' && 'block' || 'warn' }}
-        WORKSPACE: ${{ github.workspace }}
       run: |
-        export START_MARKER="${RUNNER_TEMP}/sonar-start"
-        bash "${{ github.action_path }}/../../../scripts/sonar-quality-gate.sh"
+        # GITHUB_ACTION_PATH / GITHUB_WORKSPACE are mapped into job containers; the ${{ github.* }} expressions are host paths
+        export START_MARKER="${RUNNER_TEMP}/sonar-start" WORKSPACE="$GITHUB_WORKSPACE"
+        bash "$GITHUB_ACTION_PATH/../../../scripts/sonar-quality-gate.sh"
