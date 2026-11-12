@@ -1,142 +1,99 @@
 name: Trivy Container Image Security Scan
 description: >
-  Scans a pre-built Docker image for vulnerabilities using Trivy.
-  The JSON report is scratch-only (used to count severities for this run) and
-  is not uploaded or stored anywhere, so it never counts against the org's
-  Actions artifact storage quota. Set fail-on-critical to 'true' to make
-  CRITICAL vulnerabilities block the pipeline.
+  Scans a pre-built local Docker image with Trivy and fails closed. Always uses a fresh vulnerability
+  database (the job fails if it cannot be updated or is too old). Blocks on fixable CRITICAL and HIGH
+  vulnerabilities and on secrets baked into the image; also reports repo dependency vulnerabilities
+  and configuration issues. The Trivy version, ignore list and settings are central (this repo);
+  nothing is read from the scanned repo. Block or warn is set with fail-on-critical.
 
 inputs:
   image-name:
-    description: Full image name including tag (e.g. myregistry.example.com/myproject/myservice:test-42)
+    description: Full local image name including tag (use a tag that is unique per job)
     required: true
   service-name:
-    description: Service name used for artifact naming
+    description: Service name, used in messages
     required: true
-  severity:
-    description: Comma-separated severity levels to scan
-    required: false
-    default: "CRITICAL,HIGH,MEDIUM"
   fail-on-critical:
-    description: Set to 'true' to fail the pipeline when CRITICAL vulnerabilities are found
+    description: "'true' blocks the pipeline on findings (default); 'false' only warns. Name kept for compatibility"
     required: false
-    default: "false"
+    default: "true"
+  gate-severity:
+    description: Comma-separated severities that block (fixable findings only)
+    required: false
+    default: "CRITICAL,HIGH"
+  image-secrets:
+    description: off | report | block  (secrets found inside the image layers)
+    required: false
+    default: "block"
+  fs-scan:
+    description: off | report | block  (dependency vulnerabilities from the repo's lock files)
+    required: false
+    default: "report"
+  misconfig:
+    description: off | report  (Dockerfile / Helm / Kubernetes configuration issues)
+    required: false
+    default: "report"
+  scan-path:
+    description: Folder inside the workspace for the repo scans (for example the service's context path)
+    required: false
+    default: "."
+  max-db-age-hours:
+    description: Fail if the vulnerability database is older than this
+    required: false
+    default: "48"
+  # ---- deprecated, accepted and ignored so existing callers keep working ----
+  severity:
+    description: DEPRECATED and ignored (the gate uses gate-severity)
+    required: false
+    default: ""
   trivy-image:
-    description: >
-      Trivy Docker image to use for scanning.
-      Use a private registry mirror to avoid Docker Hub rate limits.
-      Example: myregistry.example.com/devops-shared/trivy:latest
-      Falls back to aquasec/trivy:latest from Docker Hub if not provided.
+    description: DEPRECATED and ignored (Trivy is installed per job from policy/tool-versions.env)
     required: false
-    default: "aquasec/trivy:latest"
+    default: ""
   registry:
-    description: >
-      Container registry hostname to login to before pulling trivy image.
-      Only used when registry-username and registry-password are provided.
+    description: DEPRECATED and ignored
     required: false
     default: ""
   registry-username:
-    description: Username for the container registry (to pull trivy image)
+    description: DEPRECATED and ignored
     required: false
     default: ""
   registry-password:
-    description: Password for the container registry (to pull trivy image)
+    description: DEPRECATED and ignored
     required: false
     default: ""
 
 outputs:
   critical-count:
-    description: Number of CRITICAL vulnerabilities found
+    description: Number of CRITICAL vulnerabilities found in the image (all, fixed or not)
     value: ${{ steps.scan.outputs.critical_count }}
   high-count:
-    description: Number of HIGH vulnerabilities found
+    description: Number of HIGH vulnerabilities found in the image (all, fixed or not)
     value: ${{ steps.scan.outputs.high_count }}
 
 runs:
   using: composite
   steps:
-    - name: Login to container registry
+    - name: Install trivy (per job, verified)
       shell: bash
-      run: |
-        if [ -n "${{ inputs.registry-username }}" ] && [ -n "${{ inputs.registry-password }}" ]; then
-          # Derive registry hostname from trivy-image if registry input is not explicitly set
-          REGISTRY="${{ inputs.registry }}"
-          if [ -z "$REGISTRY" ]; then
-            REGISTRY=$(echo "${{ inputs.trivy-image }}" | cut -d'/' -f1)
-          fi
-          echo "${{ inputs.registry-password }}" | docker login "$REGISTRY" -u "${{ inputs.registry-username }}" --password-stdin
-          echo "Logged in to $REGISTRY"
-        else
-          echo "No registry credentials provided — skipping login (using cached auth or Docker Hub)"
-        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/../../../scripts/install-tool.sh" trivy
 
-    - name: Trivy Security Scan
+    - name: Scan image
       id: scan
       shell: bash
-      run: |
-        SERVICE_NAME_SAFE=$(echo "${{ inputs.service-name }}" | tr ' ' '-' | tr '/' '-')
-        TRIVY_REPORT="/tmp/trivy-report-${SERVICE_NAME_SAFE}.json"
-        IMAGE="${{ inputs.image-name }}"
-        TRIVY_IMAGE="${{ inputs.trivy-image }}"
-
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "🔍 Trivy Security Scan"
-        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        echo "Image:       $IMAGE"
-        echo "Service:     ${{ inputs.service-name }}"
-        echo "Severity:    ${{ inputs.severity }}"
-        echo "Trivy image: $TRIVY_IMAGE"
-        echo ""
-
-        rm -f "$TRIVY_REPORT"
-
-        echo "Generating JSON vulnerability report..."
-        docker run --rm \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          "$TRIVY_IMAGE" image \
-          --format json \
-          --ignore-unfixed \
-          --severity "${{ inputs.severity }}" \
-          --cache-dir /root/.cache/trivy \
-          "$IMAGE" 2>/dev/null | jq '.' > "$TRIVY_REPORT" 2>/dev/null || true
-
-        CRITICAL_COUNT=0
-        HIGH_COUNT=0
-        MEDIUM_COUNT=0
-
-        if [ -s "$TRIVY_REPORT" ]; then
-          echo "✅ JSON report generated"
-          CRITICAL_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "CRITICAL")] | length' "$TRIVY_REPORT" 2>/dev/null || echo "0")
-          HIGH_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "HIGH")] | length' "$TRIVY_REPORT" 2>/dev/null || echo "0")
-          MEDIUM_COUNT=$(jq '[.Results[]?.Vulnerabilities[]? | select(.Severity == "MEDIUM")] | length' "$TRIVY_REPORT" 2>/dev/null || echo "0")
-
-          echo "📊 Vulnerability Summary:"
-          echo "  CRITICAL: $CRITICAL_COUNT"
-          echo "  HIGH:     $HIGH_COUNT"
-          echo "  MEDIUM:   $MEDIUM_COUNT"
-        else
-          echo "Trivy JSON report was not created or is empty"
-          echo '{"Results": []}' > "$TRIVY_REPORT"
-        fi
-
-        echo "Detailed Scan Results (CRITICAL & HIGH only):"
-        docker run --rm \
-          -v /var/run/docker.sock:/var/run/docker.sock \
-          "$TRIVY_IMAGE" image \
-          --format table \
-          --exit-code 0 \
-          --ignore-unfixed \
-          --severity CRITICAL,HIGH \
-          --cache-dir /root/.cache/trivy \
-          "$IMAGE"
-
-        echo "critical_count=$CRITICAL_COUNT" >> $GITHUB_OUTPUT
-        echo "high_count=$HIGH_COUNT" >> $GITHUB_OUTPUT
-
-        if [ "${{ inputs.fail-on-critical }}" = "true" ] && [ "${CRITICAL_COUNT:-0}" -gt 0 ]; then
-          echo "::error::Pipeline failed: $CRITICAL_COUNT CRITICAL vulnerabilities found in $IMAGE"
-          rm -f "$TRIVY_REPORT"
-          exit 1
-        fi
-
-        rm -f "$TRIVY_REPORT"
+      env:
+        IMAGE: ${{ inputs.image-name }}
+        SERVICE: ${{ inputs.service-name }}
+        REPO: ${{ github.repository }}
+        MODE: ${{ inputs.fail-on-critical == 'true' && 'block' || 'warn' }}
+        GATE_SEVERITY: ${{ inputs.gate-severity }}
+        IMAGE_SECRETS: ${{ inputs.image-secrets }}
+        FS_SCAN: ${{ inputs.fs-scan }}
+        MISCONFIG: ${{ inputs.misconfig }}
+        SCAN_PATH: ${{ inputs.scan-path }}
+        MAX_DB_AGE_HOURS: ${{ inputs.max-db-age-hours }}
+        POLICY_DIR: ${{ github.action_path }}/../../../policy/trivy
+        WORKSPACE: ${{ github.workspace }}
+      run: bash "${{ github.action_path }}/../../../scripts/trivy-scan.sh"
