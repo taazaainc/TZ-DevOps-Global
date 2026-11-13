@@ -15,6 +15,7 @@ Logic that is **identical across all repos** lives here — reference it from an
 | Composite Action | `gitleaks-scan` | `.github/actions/gitleaks-scan` | Secret scanning via Gitleaks (latest push and the PR's net change, central config and exceptions) |
 | Composite Action | `trivy-scan` | `.github/actions/trivy-scan` | Container image vulnerability scan via Trivy (blocks fixable CRITICAL and HIGH) |
 | Composite Action | `sonar-scan-cli` | `.github/actions/sonar-scan-cli` | SonarQube analysis with the official SonarScanner CLI image (pinned), for any non-.NET language; coverage reports picked up automatically |
+| Composite Action | `sonar-java-scan` | `.github/actions/sonar-java-scan` | Java: build and test in the official Maven image (Java version from the project), JaCoCo coverage, analysis with the official SonarScanner CLI. No custom image |
 | Composite Action | `sonar-quality-gate` | `.github/actions/sonar-quality-gate` | Waits for THIS run's Sonar analysis and checks its quality gate (fails closed) |
 | Composite Action | `scan-card` | `.github/actions/scan-card` | One short result card per service on the job summary page |
 | Composite Action | `validate-branch` | `.github/actions/validate-branch` | Branch naming only (lightweight, use github-restrictions instead) |
@@ -94,7 +95,7 @@ Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each
 | `changed_services` | No | JSON array from `check-for-changes` output. Pass `[]` to skip. |
 | `base_container_image` | Yes | Job container image (.NET SDK, docker CLI). Store as `vars.BASE_CONTAINER_IMAGE` in the caller. |
 | `sonar_nodejs_image` | No | **Deprecated**: accepted but no longer used. Non-.NET services are scanned with the official SonarScanner CLI image pinned in `policy/tool-versions.env`. |
-| `sonar_java_image` | No | Docker image for Java SonarQube scanning (only for services with `scanner_type: "java"`). |
+| `sonar_java_image` | No | **Deprecated**: accepted but no longer used. Java services are built in the official Maven image and analysed with the official SonarScanner CLI, both pinned in `policy/tool-versions.env`. |
 | `fail-on-critical` | No | Controls whether Trivy CRITICAL CVEs block the pipeline. See **Enabling / Disabling Trivy & GitLeaks blocking** below. |
 | `fail-on-secrets` | No | Controls whether GitLeaks secret findings block the pipeline. See **Enabling / Disabling Trivy & GitLeaks blocking** below. |
 
@@ -127,7 +128,17 @@ Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each
 
 - Omit `scanner_type` (or set `null`) → .NET scanning path (sonar-scanner via dotnet, in the job container)
 - `scanner_type: "nodejs"`, `"generic"`, `"python"` or `"go"` → the official SonarScanner CLI (`sonar-scan-cli` action). It analyses JavaScript/TypeScript (Angular, React, Node), Python, Go, PHP, Ruby, HTML/CSS, YAML, Docker and more from source, with no image per language
-- `scanner_type: "java"` → Java scanning path with `sonar_java_image`
+- `scanner_type: "java"` → the Java path (`sonar-java-scan` action), described below
+
+**SonarQube analysis for Java services (`sonar-java-scan`):**
+- **Build and test** in the official Maven image (Eclipse Temurin JDK). The Java version (8, 11, 17 or 21) is read from the project (`java.version`, `maven.compiler.release/source/target`), or set `java_version`. Gradle (wrapper) and any other build are supported through `build_tool` and `build_command`.
+- **Analysis** with the official SonarScanner CLI image (Java 21), from source, compiled classes and the JaCoCo report. Both images are pinned by digest in `policy/tool-versions.env`; no custom image has to be maintained.
+- **Coverage is automatic**: JaCoCo is added from the command line when the poms do not configure it, and the XML report is found under `target/site/jacoco/jacoco.xml` of every module. When developers add unit tests later, coverage appears without any change in the calling repo.
+- **The repository's own `sonar-project.properties` wins**: the central defaults (binaries `**/target/classes`, test binaries, libraries `**/target/dependency/*.jar`, JaCoCo path, exclusions, source level) are only added for keys the file does not set. Multi-module projects work with the defaults.
+- **Failing unit tests do not hide the Sonar result**: the analysis still runs and the quality gate is checked, then a separate step `Java unit tests` turns the job red.
+- **Private Maven repositories**: `NEXUS_USERNAME` and `NEXUS_PASSWORD` (org secrets) are passed to the build by name. Use them from a settings file in the repository through `${env.NEXUS_USERNAME}` and `${env.NEXUS_PASSWORD}` (key `settings_file`). Do not commit credentials.
+- **Isolation**: no host folder is mounted. The code is streamed into a throwaway Docker volume, built there, read by the scanner from the same volume, and the volume is deleted at the end. The scanner runs with all Linux capabilities dropped and `no-new-privileges`; the token is passed by environment name.
+- Optional keys per service in `variables.json`: `java_version`, `build_tool` (`auto`, `maven`, `gradle`, `custom`), `run_tests` (`false` skips the tests), `maven_args` (for example `-Pci`), `settings_file`, `build_command`. Gradle and `build_command` are provided for future projects and have not been exercised on a real project yet.
 
 **SonarQube analysis for non-.NET services (`sonar-scan-cli`):**
 - Same analysis settings for every service: project key and name (`sonar_key`), sources (`project_path`), project version (branch and run number), git SCM.

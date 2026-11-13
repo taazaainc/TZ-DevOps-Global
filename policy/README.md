@@ -7,7 +7,7 @@ request approved by a DevOps owner (CODEOWNERS).
 
 | File / folder | Purpose |
 |---|---|
-| `tool-versions.env` | Gitleaks and Trivy versions with their SHA256 (pinned), minimum versions, and the SonarScanner CLI image pinned by digest. Change only through a pull request |
+| `tool-versions.env` | Gitleaks and Trivy versions with their SHA256 (pinned), minimum versions, the SonarScanner CLI image pinned by digest, and the official Maven images (per Java version) used by the Java scan. Change only through a pull request |
 | `trivy/_default.trivyignore.yaml` | Trivy ignore list used when a repo has no file of its own (empty) |
 | `trivy/<owner>__<repo>.trivyignore.yaml` | Trivy exceptions for one repo, for example `myorg__my-service.trivyignore.yaml` |
 | `gitleaks/_default/.gitleaksignore` | Gitleaks ignore list used when a repo has no folder of its own (empty) |
