@@ -312,6 +312,12 @@ Needs `SONAR_TOKEN` and `SONAR_HOST_URL` in the job environment.
 
 ---
 
+### scan-card
+
+Publishes one short result card per service on the run's summary page, for developers: one status line per check (🟢 passed, 🔴 failed or critical/high, 🟡 warning), then only what to fix (worst findings first, and where they come from). No tool versions or policy text; those stay in the job log. Use `mode: init` at the start of the job and `mode: publish` at the end with `if: always()`. The scan actions fill the card themselves.
+
+---
+
 ## Variables & Secrets Strategy
 
 | Value | Where to store | Why |

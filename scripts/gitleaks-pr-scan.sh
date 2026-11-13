@@ -18,6 +18,7 @@ WORKSPACE="${WORKSPACE:-$PWD}"; cd "$WORKSPACE"
 TMPBASE="${RUNNER_TEMP:-/tmp}"
 WORK="$(mktemp -d "$TMPBASE/gitleaks.XXXXXX")"; trap 'rm -rf "$WORK"' EXIT
 git config --global --add safe.directory "$WORKSPACE" 2>/dev/null || true
+. "$(dirname "${BASH_SOURCE[0]}")/card-lib.sh"
 
 fail_or_warn() {   # $1 message
   if [ "$MODE" = "block" ]; then echo "::error::$1"; return 1; else echo "::warning::$1 (mode=warn, not blocking)"; return 0; fi
@@ -69,6 +70,8 @@ if [ -n "$MB" ]; then
   echo "Net-change check: $N changed file(s)"
   if [ "$N" -gt 0 ]; then
     run_gl "$WORK/net.json" dir "$NET"; RC2=$?
+    # net-change findings carry the temp folder in their path: show the repo-relative file name instead (also lets the duplicate of a commit finding collapse)
+    [ -s "$WORK/net.json" ] && jq --arg p "$NET/" 'map(.File |= ltrimstr($p))' "$WORK/net.json" > "$WORK/net.fixed" 2>/dev/null && mv "$WORK/net.fixed" "$WORK/net.json"
     case "$RC2" in 0|77) merge_report "$WORK/net.json" ;; *) TOOL_ERR=1; echo "::error::gitleaks (net-change scan) failed to run, exit $RC2" ;; esac
   fi
   if git diff -U0 "$MB" "$HEAD_SHA" | grep -E '^\+' | grep -v '^+++' | grep -q 'gitleaks:allow'; then
@@ -85,10 +88,11 @@ if [ "$COUNT" -gt 0 ]; then
   echo "Gitleaks found $COUNT potential secret(s):"
   jq -r '.[] | "  - \(.RuleID)  \(.File):\(.StartLine)  commit \((.Commit // "net-change")[0:8])  fingerprint \(.Fingerprint)"' "$FINDINGS" | sort -u | head -40
   echo "ACTION REQUIRED: rotate/revoke the secret first. Removing it from the file does not undo the exposure."
-  {
-    echo "### Gitleaks: $SERVICE"; echo "Found **$COUNT** potential secret(s) ($KIND). **Rotate them first.**"; echo
-    jq -r '.[] | "- `\(.RuleID)` in `\(.File):\(.StartLine)` (commit `\((.Commit // "net-change")[0:8])`)"' "$FINDINGS" | sort -u | head -40
-  } >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+  { echo "<details open><summary>Where the secrets are ($COUNT)</summary>"; echo
+    echo "| Rule | File | Commit |"; echo "|---|---|---|"
+    jq -r '.[] | "| `\(.RuleID)` | `\(.File):\(.StartLine)` | `\((.Commit // "net-change")[0:8])` |"' "$FINDINGS" | sort -u | head -30
+    echo; echo "**Rotate or revoke each secret first.** Deleting it from the file does not undo the exposure."; echo "</details>"
+  } | card_detail gitleaks
   if [ -n "${GH_TOKEN:-}" ] && [ -n "${PR_NUMBER:-}" ] && [ -n "${REPO:-}" ]; then
     BODY="$(jq -Rs '{body: .}' <<EOF
 **Gitleaks found $COUNT potential secret(s)** in this pull request ($SERVICE, $KIND).
@@ -111,4 +115,8 @@ fi
 if [ "$TOOL_ERR" = 1 ]; then
   fail_or_warn "gitleaks did not run correctly; failing closed" || RC=1
 fi
+if [ "$COUNT" -gt 0 ]; then ICON="🔴"; [ "$MODE" = "block" ] || ICON="🟡"; card_row gitleaks "$ICON" "$COUNT secret(s) found. Rotate them first"
+elif [ "$INLINE" = 1 ]; then ICON="🔴"; [ "$MODE" = "block" ] || ICON="🟡"; card_row gitleaks "$ICON" "Inline gitleaks:allow is not accepted; ask DevOps for an exception"
+elif [ "$TOOL_ERR" = 1 ]; then ICON="🔴"; [ "$MODE" = "block" ] || ICON="🟡"; card_row gitleaks "$ICON" "Scan could not run (see the log)"
+else card_row gitleaks "🟢" "No secrets found"; fi
 exit "$RC"

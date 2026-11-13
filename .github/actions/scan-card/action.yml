@@ -1,0 +1,22 @@
+name: Scan result card
+description: >
+  Publishes one short result card per service in the job summary (status of each check, then what to
+  fix). Use mode init at the start of the job and mode publish at the end (if: always()).
+inputs:
+  mode:
+    description: init | publish
+    required: false
+    default: publish
+  service-name:
+    description: Service name shown on the card
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Scan card
+      shell: bash
+      env:
+        MODE: ${{ inputs.mode }}
+        SERVICE: ${{ inputs.service-name }}
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/scan-card.sh"

@@ -178,6 +178,14 @@ jobs:
           echo "Installed Tools:"
           dotnet tool list --global
           echo ""
+      # Starts the short result card shown in the job summary (one per service).
+      - name: Prepare result card
+        if: ${{ !cancelled() }}
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/scan-card@master
+        with:
+          mode: init
+          service-name: ${{ matrix.service.name }}
+
       # Gitleaks runs FIRST, on the clean checkout (before the pre-build hook adds files) and whether or
       # not anything else has failed. Latest push on later pushes; whole PR when first opened.
       - name: GitLeaks Secret Scanning
@@ -330,6 +338,14 @@ jobs:
           project-key: ${{ matrix.service.sonar_key }}
           service-name: ${{ matrix.service.name }}
           # waits for THIS analysis to finish (not a fixed sleep) and reads the gate of that analysis
+
+      # Publishes the card: one status per check, then what to fix. Runs even when a check failed.
+      - name: Publish result card
+        if: always()
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/scan-card@master
+        with:
+          mode: publish
+          service-name: ${{ matrix.service.name }}
 
       - name: Cleanup Docker Images
         if: always()
