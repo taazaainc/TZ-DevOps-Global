@@ -22,7 +22,7 @@ inputs:
     required: false
     default: ""
   host-workspace:
-    description: "Host path of the workspace (pass ${{ github.workspace }}); used for the docker mount"
+    description: Host path of the workspace (the workflow passes github.workspace); used for the docker mount
     required: true
   scanner-image:
     description: Optional override of the pinned scanner image (leave empty to use the central policy)
@@ -47,6 +47,6 @@ runs:
         SCANNER_IMAGE: ${{ inputs.scanner-image }}
         IGNORED_IMAGE: ${{ inputs.ignored-image }}
       run: |
-        # GITHUB_ACTION_PATH / GITHUB_WORKSPACE are mapped into job containers; the ${{ github.* }} expressions are host paths
+        # GITHUB_ACTION_PATH / GITHUB_WORKSPACE are mapped into job containers; the github.workspace expression is the host path
         export WORKSPACE="$GITHUB_WORKSPACE" POLICY_FILE="$GITHUB_ACTION_PATH/../../../policy/tool-versions.env"
         bash "$GITHUB_ACTION_PATH/../../../scripts/sonar-scan-cli.sh"
