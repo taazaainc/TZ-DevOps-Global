@@ -12,16 +12,13 @@
 #   coverage.out  -> sonar.go.coverage.reportPaths       (Go)
 # No report found = analysis without coverage (not an error).
 #
-# Isolation: throwaway container (--rm), all Linux capabilities dropped except DAC_OVERRIDE, no privilege
-# escalation, no Docker socket, not privileged, token passed by environment name only (never on a command line),
-# work folder inside the workspace so the quality gate step finds report-task.txt of THIS run.
-# User: root inside the container. The job container checks out the code as root (often root-only folders),
-# while the workspace folder itself may belong to the runner user: the image user (uid 1000) cannot read the
-# first, and root without DAC_OVERRIDE cannot write into the second. Root-owned .scannerwork files are removed
-# by the workflow's "Cleanup root-owned workspace artifacts" step.
+# Isolation: throwaway container (--rm) running as the image user (uid 1000, not root), ALL Linux capabilities
+# dropped, no privilege escalation, no Docker socket, not privileged, NO host folder mounted (the code is
+# streamed in with tar, node_modules excluded), token passed by environment name only (never on a command line).
+# The scanner's report-task.txt is written back to the workspace so the quality gate step checks THIS run.
 #
 # Env in (from the action): SONAR_HOST_URL SONAR_TOKEN PROJECT_KEY SOURCES PROJECT_VERSION SERVICE
-#   HOST_WORKSPACE (host path of the workspace, for the docker mount)  WORKSPACE (same folder as seen here)
+#   WORKSPACE (the checked-out repository as seen by this step)  HOST_WORKSPACE (no longer needed, ignored)
 #   SCANNER_IMAGE (optional override)  IGNORED_IMAGE (old caller input, only reported)  POLICY_FILE
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/card-lib.sh"
@@ -30,7 +27,6 @@ fail() { card_row sonar "🔴" "$2"; echo "::error::$1"; exit 1; }
 [ -n "${SONAR_TOKEN:-}" ]    || fail "SONAR_TOKEN is not set" "Sonar is not configured (no token)"
 [ -n "${SONAR_HOST_URL:-}" ] || fail "SONAR_HOST_URL is not set" "Sonar is not configured (no host)"
 [ -n "${PROJECT_KEY:-}" ]    || fail "project key is empty" "Sonar project key is missing"
-[ -n "${HOST_WORKSPACE:-}" ] || fail "host workspace path is empty" "Sonar scan setup error"
 WORKSPACE="${WORKSPACE:-$PWD}"; SERVICE="${SERVICE:-service}"; SOURCES="${SOURCES:-.}"; SOURCES="${SOURCES%/}"
 
 if [ -z "${SCANNER_IMAGE:-}" ] && [ -f "${POLICY_FILE:-}" ]; then
@@ -64,21 +60,35 @@ if [ -n "$found" ]; then echo "Coverage reports:$found"
 else echo "Coverage reports: none found (tests that write coverage/lcov.info, coverage.xml or coverage.out are picked up automatically)"; fi
 
 echo "Scanner image: $SCANNER_IMAGE"
-echo "Workspace owner/mode: $(stat -c '%U:%G %a' "$WORKSPACE" 2>/dev/null) | sources owner/mode: $(stat -c '%U:%G %a' "$WORKSPACE/$src_rel" 2>/dev/null)"
 echo "Project: $PROJECT_KEY | sources: $SOURCES | version: ${PROJECT_VERSION:-unknown}"
 pulled=0
 for i in 1 2 3; do docker pull -q "$SCANNER_IMAGE" >/dev/null 2>&1 && { pulled=1; break; }; sleep $((i * 5)); done
 [ "$pulled" = 1 ] || docker image inspect "$SCANNER_IMAGE" >/dev/null 2>&1 \
   || fail "could not pull $SCANNER_IMAGE" "The Sonar scanner image could not be downloaded"
 
-docker run --rm \
-  --user 0:0 --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges \
-  -e SONAR_HOST_URL -e SONAR_TOKEN -e SONAR_USER_HOME=/tmp/.sonar \
-  -e SCANNER_WORKDIR_PATH=/usr/src/.scannerwork \
-  -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
-  -v "$HOST_WORKSPACE:/usr/src" \
-  "$SCANNER_IMAGE" "${args[@]}"
-rc=$?
+# The code is streamed INTO the scanner container (tar over stdin) and the report comes back on stdout.
+# No host path is mounted: host-path mounts from inside CI job containers are unreliable, and without a mount
+# the scanner cannot touch the runner's disk at all.
+OUT="$(mktemp)"
+tar -C "$WORKSPACE" --exclude=node_modules --exclude=.scannerwork -cf - . \
+| docker run --rm -i --cap-drop ALL --security-opt no-new-privileges \
+    -e SONAR_HOST_URL -e SONAR_TOKEN -e SONAR_USER_HOME=/tmp/.sonar \
+    -e SCANNER_WORKDIR_PATH=/usr/src/.scannerwork \
+    -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
+    --entrypoint bash "$SCANNER_IMAGE" -c '
+      tar -xf - -C /usr/src || { echo "ERROR copying the code into the scanner container"; exit 90; }
+      /usr/bin/entrypoint.sh "$@"; rc=$?
+      if [ -f /usr/src/.scannerwork/report-task.txt ]; then
+        echo "===TZ-REPORT-BEGIN==="; cat /usr/src/.scannerwork/report-task.txt; echo "===TZ-REPORT-END==="
+      fi
+      exit $rc' bash "${args[@]}" | tee "$OUT"
+rcs=("${PIPESTATUS[@]}"); tar_rc=${rcs[0]}; rc=${rcs[1]}
+if [ "$tar_rc" -ne 0 ]; then rm -f "$OUT"; fail "could not read the checked-out code for $SERVICE (tar exit $tar_rc)" "The Sonar scan could not read the code"; fi
+# hand report-task.txt to the quality gate step (it looks for it in the workspace)
+mkdir -p "$WORKSPACE/.scannerwork"
+sed -n '/^===TZ-REPORT-BEGIN===$/,/^===TZ-REPORT-END===$/p' "$OUT" | sed '1d;$d' > "$WORKSPACE/.scannerwork/report-task.txt"
+[ -s "$WORKSPACE/.scannerwork/report-task.txt" ] || rm -f "$WORKSPACE/.scannerwork/report-task.txt"
+rm -f "$OUT"
 if [ "$rc" -ne 0 ]; then
   fail "Sonar scan failed for $SERVICE (scanner exit code $rc): see the scanner output above" "The Sonar scan failed (scanner error, see the step log)"
 fi
