@@ -3,6 +3,8 @@
 Centralized GitHub Actions and reusable workflows for Taazaa DevOps pipelines.
 Logic that is **identical across all repos** lives here — reference it from any repo's workflow instead of duplicating code.
 
+> **This repository is public.** Never commit credentials, internal hostnames, registry or image names, project or customer names, IP addresses or run ids. Callers pass those as variables and secrets. Every change goes through a pull request approved by a DevOps owner (CODEOWNERS).
+
 ---
 
 ## What's Here
@@ -10,11 +12,14 @@ Logic that is **identical across all repos** lives here — reference it from an
 | Type | Name | Path | Purpose |
 |------|------|------|---------|
 | Composite Action | `github-restrictions` | `.github/actions/github-restrictions` | PR gate: branch naming + forbidden file detection + PR size limits |
-| Composite Action | `gitleaks-scan` | `.github/actions/gitleaks-scan` | Secret scanning via GitLeaks |
-| Composite Action | `trivy-scan` | `.github/actions/trivy-scan` | Container image vulnerability scan via Trivy |
+| Composite Action | `gitleaks-scan` | `.github/actions/gitleaks-scan` | Secret scanning via Gitleaks (latest push and the PR's net change, central config and exceptions) |
+| Composite Action | `trivy-scan` | `.github/actions/trivy-scan` | Container image vulnerability scan via Trivy (blocks fixable CRITICAL and HIGH) |
+| Composite Action | `sonar-scan-cli` | `.github/actions/sonar-scan-cli` | SonarQube analysis with the official SonarScanner CLI image (pinned), for any non-.NET language; coverage reports picked up automatically |
+| Composite Action | `sonar-quality-gate` | `.github/actions/sonar-quality-gate` | Waits for THIS run's Sonar analysis and checks its quality gate (fails closed) |
+| Composite Action | `scan-card` | `.github/actions/scan-card` | One short result card per service on the job summary page |
 | Composite Action | `validate-branch` | `.github/actions/validate-branch` | Branch naming only (lightweight, use github-restrictions instead) |
 | Reusable Workflow | `check-for-changes` | `.github/workflows/check-for-changes.yml` | Incremental change detection — outputs JSON list of changed services |
-| Reusable Workflow | `code-quality-security` | `.github/workflows/code-quality-security.yml` | SonarQube + Trivy + GitLeaks scan per changed service (matrix) |
+| Reusable Workflow | `code-quality-security` | `.github/workflows/code-quality-security.yml` | Gitleaks, then Trivy, then SonarQube, per changed service (matrix) |
 
 ---
 
@@ -87,8 +92,9 @@ Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each
 |-------|----------|-------------|
 | `runner` | No | JSON array of runner labels |
 | `changed_services` | No | JSON array from `check-for-changes` output. Pass `[]` to skip. |
-| `dotnet_container_image` | Yes | Docker image with .NET SDK + sonar-scanner. Store as `vars.DOTNET_CONTAINER_IMAGE` in caller. |
-| `sonar_nodejs_image` | Yes | Docker image for Node.js SonarQube scanning. Store as `vars.SONAR_NODEJS_IMAGE` in caller. |
+| `base_container_image` | Yes | Job container image (.NET SDK, docker CLI). Store as `vars.BASE_CONTAINER_IMAGE` in the caller. |
+| `sonar_nodejs_image` | No | **Deprecated**: accepted but no longer used. Non-.NET services are scanned with the official SonarScanner CLI image pinned in `policy/tool-versions.env`. |
+| `sonar_java_image` | No | Docker image for Java SonarQube scanning (only for services with `scanner_type: "java"`). |
 | `fail-on-critical` | No | Controls whether Trivy CRITICAL CVEs block the pipeline. See **Enabling / Disabling Trivy & GitLeaks blocking** below. |
 | `fail-on-secrets` | No | Controls whether GitLeaks secret findings block the pipeline. See **Enabling / Disabling Trivy & GitLeaks blocking** below. |
 
@@ -100,8 +106,10 @@ Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each
 | `SONAR_HOST_URL` | SonarQube server URL |
 | `TCR_USERNAME` | Container registry username (for pulling build container + Trivy image) |
 | `TCR_PASSWORD` | Container registry password |
+| `PRE_BUILD_AWS_ACCESS_KEY_ID` / `PRE_BUILD_AWS_SECRET_ACCESS_KEY` | Optional: only for repos whose pre-build hook downloads files before the Docker build |
+| `NEXUS_USERNAME` / `NEXUS_PASSWORD` | Optional: only for Java services that pull from a private Nexus |
 
-**Tool versions and exceptions are central:** Gitleaks and Trivy are installed fresh in every job from `policy/tool-versions.env` (newest stable release older than the cooldown, checksum verified). Ignore lists live in `policy/` (see `policy/README.md`). `vars.TRIVY_IMAGE` is no longer used.
+**Tool versions and exceptions are central:** Gitleaks and Trivy are installed fresh in every job from `policy/tool-versions.env` (pinned versions, SHA256 verified). The SonarScanner CLI image is pinned by digest in the same file. Ignore lists live in `policy/` (see `policy/README.md`). `vars.TRIVY_IMAGE` and `vars.SONAR_NODEJS_IMAGE` are no longer used.
 
 **variables.json — additional fields for scanning:**
 ```json
@@ -117,8 +125,16 @@ Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each
 }
 ```
 
-- Omit `scanner_type` (or set `null`) → .NET scanning path (sonar-scanner via dotnet)
-- Set `scanner_type: "nodejs"` → Node.js scanning path (runs SonarQube via Docker container)
+- Omit `scanner_type` (or set `null`) → .NET scanning path (sonar-scanner via dotnet, in the job container)
+- `scanner_type: "nodejs"`, `"generic"`, `"python"` or `"go"` → the official SonarScanner CLI (`sonar-scan-cli` action). It analyses JavaScript/TypeScript (Angular, React, Node), Python, Go, PHP, Ruby, HTML/CSS, YAML, Docker and more from source, with no image per language
+- `scanner_type: "java"` → Java scanning path with `sonar_java_image`
+
+**SonarQube analysis for non-.NET services (`sonar-scan-cli`):**
+- Same analysis settings for every service: project key and name (`sonar_key`), sources (`project_path`), project version (branch and run number), git SCM.
+- **Coverage is automatic**: when the tests wrote `lcov.info` (JS/TS), `coverage.xml` (Python, Cobertura) or `coverage.out` (Go) anywhere under the service folder, it is passed to Sonar. Without tests the scan still runs, without coverage. No change in the calling repo is needed when teams add tests.
+- **Isolation**: the scanner runs in a throwaway container as a non-root user with all Linux capabilities dropped and `no-new-privileges`. No host folder is mounted: the code is streamed into the container (without `node_modules`), and only the scanner's report comes back. The token is passed by environment name, never on a command line.
+- A failed scan fails the step and shows on the result card. The quality gate step then checks the gate of **this** run's analysis (it waits for Sonar to finish processing; no fixed sleep).
+- To move to a newer scanner: update `SONAR_SCANNER_CLI_IMAGE` (tag and digest) in `policy/tool-versions.env` through a pull request.
 
 **Jobs produced:**
 - `<ServiceName>-SCA & Security Scan` — one per changed service (dynamic name, not suitable for required checks)
@@ -133,8 +149,8 @@ code-quality-security:
   with:
     runner: '["self-hosted", "linux", "your-runner-label"]'
     changed_services: ${{ needs.github-restrictions.outputs.changed_services }}
-    dotnet_container_image: ${{ vars.DOTNET_CONTAINER_IMAGE }}
-    sonar_nodejs_image: ${{ vars.SONAR_NODEJS_IMAGE }}
+    base_container_image: ${{ vars.BASE_CONTAINER_IMAGE }}
+    # sonar_nodejs_image is no longer needed (still accepted, ignored)
     # fail-on-critical: 'false'  # override only if you need to bypass CRITICAL blocking for this repo
     # fail-on-secrets: 'false'   # override only if you need to bypass secret detection blocking for this repo
   secrets:

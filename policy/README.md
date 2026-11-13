@@ -7,9 +7,9 @@ request approved by a DevOps owner (CODEOWNERS).
 
 | File / folder | Purpose |
 |---|---|
-| `tool-versions.env` | Gitleaks and Trivy versions. `latest` = newest stable release older than `TOOL_COOLDOWN_DAYS`; minimum versions stop downgrades. To pin, set the version and its SHA256 |
+| `tool-versions.env` | Gitleaks and Trivy versions with their SHA256 (pinned), minimum versions, and the SonarScanner CLI image pinned by digest. Change only through a pull request |
 | `trivy/_default.trivyignore.yaml` | Trivy ignore list used when a repo has no file of its own (empty) |
-| `trivy/<owner>__<repo>.trivyignore.yaml` | Trivy exceptions for one repo, for example `taazaainc__PTB-Prizum-Framework.trivyignore.yaml` |
+| `trivy/<owner>__<repo>.trivyignore.yaml` | Trivy exceptions for one repo, for example `myorg__my-service.trivyignore.yaml` |
 | `gitleaks/_default/.gitleaksignore` | Gitleaks ignore list used when a repo has no folder of its own (empty) |
 | `gitleaks/<owner>__<repo>/.gitleaksignore` | Gitleaks exceptions (fingerprints) for one repo |
 
