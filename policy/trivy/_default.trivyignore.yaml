@@ -1,5 +1,5 @@
 # Default Trivy ignore list (used when a repo has no file of its own). Intentionally empty.
-# Per-repo list: policy/trivy/<owner>__<repo>.trivyignore.yaml  (for example taazaainc__PTB-Prizum-Framework.trivyignore.yaml)
+# Per-repo list: policy/trivy/<owner>__<repo>.trivyignore.yaml  (for example myorg__my-service.trivyignore.yaml)
 # Every entry needs an id, a statement (reason incl. requester) and an expired_at date (yyyy-mm-dd, at most 90 days ahead).
 # Example:
 # vulnerabilities:

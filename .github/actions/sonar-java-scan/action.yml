@@ -1,0 +1,86 @@
+name: SonarQube Scan for Java (official tools)
+description: >
+  Builds and tests a Java project in the official Maven image (Eclipse Temurin JDK, version taken from the
+  project) and analyses it with the official SonarScanner CLI image. Both images are pinned by digest in
+  policy/tool-versions.env. No custom image and no host folder mount. Coverage (JaCoCo) is added automatically.
+  A repository's own sonar-project.properties overrides the defaults. Needs SONAR_TOKEN and SONAR_HOST_URL in the
+  job environment; NEXUS_USERNAME and NEXUS_PASSWORD are passed to the build when present. Run the quality gate
+  action after it.
+
+inputs:
+  project-key:
+    description: Sonar project key of the service
+    required: true
+  sources:
+    description: Folder of the Java project (pom.xml or Gradle build), relative to the repository root
+    required: false
+    default: "."
+  project-version:
+    description: Version label shown in Sonar
+    required: false
+    default: ""
+  service-name:
+    description: Service name, used in messages
+    required: false
+    default: ""
+  build-tool:
+    description: auto (default), maven, gradle or custom
+    required: false
+    default: auto
+  java-version:
+    description: auto (default, read from the pom) or 8, 11, 17, 21
+    required: false
+    default: auto
+  run-tests:
+    description: Run the unit tests (true or false)
+    required: false
+    default: "true"
+  maven-args:
+    description: Extra Maven arguments, for example a profile such as -Pci
+    required: false
+    default: ""
+  settings-file:
+    description: Optional Maven settings file inside the repository
+    required: false
+    default: ""
+  build-command:
+    description: Optional full build command (overrides the default build, runs in the build image)
+    required: false
+    default: ""
+  extra-sonar-args:
+    description: Optional extra scanner arguments
+    required: false
+    default: ""
+  ignored-image:
+    description: The old caller input for the custom Java image; accepted for compatibility and only reported
+    required: false
+    default: ""
+
+outputs:
+  test-failures:
+    description: Number of failed unit tests found in the build reports (0 when none)
+    value: ${{ steps.scan.outputs.test-failures }}
+
+runs:
+  using: composite
+  steps:
+    - name: Build, test and analyse
+      id: scan
+      shell: bash
+      env:
+        PROJECT_KEY: ${{ inputs.project-key }}
+        SOURCES: ${{ inputs.sources }}
+        PROJECT_VERSION: ${{ inputs.project-version }}
+        SERVICE: ${{ inputs.service-name }}
+        BUILD_TOOL: ${{ inputs.build-tool }}
+        JAVA_VERSION: ${{ inputs.java-version }}
+        RUN_TESTS: ${{ inputs.run-tests }}
+        MAVEN_ARGS: ${{ inputs.maven-args }}
+        SETTINGS_FILE: ${{ inputs.settings-file }}
+        BUILD_COMMAND: ${{ inputs.build-command }}
+        EXTRA_SONAR_ARGS: ${{ inputs.extra-sonar-args }}
+        IGNORED_IMAGE: ${{ inputs.ignored-image }}
+      run: |
+        # GITHUB_ACTION_PATH and GITHUB_WORKSPACE are mapped into job containers
+        export WORKSPACE="$GITHUB_WORKSPACE" POLICY_FILE="$GITHUB_ACTION_PATH/../../../policy/tool-versions.env"
+        bash "$GITHUB_ACTION_PATH/../../../scripts/sonar-java-scan.sh"

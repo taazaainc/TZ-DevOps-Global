@@ -40,11 +40,8 @@ on:
         type: string
       sonar_java_image:
         description: >
-          Docker image used to run SonarQube analysis for Java services.
-          Must be an input (not secret) — GitHub disallows secrets context in
-          with: of reusable workflow calls.
-          Store as a repo variable (vars.SONAR_JAVA_IMAGE) in the caller.
-          Optional — only required for repos with Java services.
+          DEPRECATED, accepted but no longer used: Java services are built in the official Maven image and
+          analysed with the official SonarScanner CLI, both pinned in policy/tool-versions.env.
         required: false
         type: string
       fail-on-critical:
@@ -141,7 +138,6 @@ jobs:
       TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
       TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
       SONAR_NODEJS_IMAGE: ${{ inputs.sonar_nodejs_image }}
-      SONAR_JAVA_IMAGE: ${{ inputs.sonar_java_image }}
       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
       # unique per repo run, attempt and matrix job: shared Docker daemons must never mix up scan images
@@ -309,36 +305,44 @@ jobs:
           service-name: ${{ matrix.service.name }}
           # waits for THIS analysis to finish (not a fixed sleep) and reads the gate of that analysis
 
-      - name: Pull Java SonarQube Image
-        id: java_pull
-        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') }}
-        run: |
-          JAVA_IMAGE=$(printf '%s' "$SONAR_JAVA_IMAGE" | tr -d '[:space:]')
-          echo "Pulling image: $JAVA_IMAGE"
-          docker pull "$JAVA_IMAGE"
+      # Java services: built and tested in the official Maven image (Java version taken from the project) and analysed
+      # with the official SonarScanner CLI. Both images are pinned in policy/tool-versions.env. The caller's
+      # sonar_java_image input is still accepted but no longer used. Optional keys per service in variables.json:
+      # java_version, build_tool, run_tests, maven_args, settings_file, build_command.
       - name: SonarQube Scan for Java
         id: java_scan
-        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') && steps.java_pull.outcome == 'success' }}
-        run: |
-          JAVA_IMAGE=$(printf '%s' "$SONAR_JAVA_IMAGE" | tr -d '[:space:]')
-          docker run --rm \
-            -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-            -e SONAR_TOKEN="$SONAR_TOKEN" \
-            -e NEXUS_USERNAME="$NEXUS_USERNAME" \
-            -e NEXUS_PASSWORD="$NEXUS_PASSWORD" \
-            -e SONAR_PROJECT_KEY="${{ matrix.service.sonar_key }}" \
-            -e SONAR_SOURCES="$MAIN_PROJECT_PATH" \
-            -e SONAR_PROJECT_VERSION="${{ github.head_ref || github.ref_name }}-${{ github.run_number }}" \
-            -v "${{ github.workspace }}:/usr/src" \
-            "$JAVA_IMAGE"
+        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') }}
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/sonar-java-scan@master
+        with:
+          project-key: ${{ matrix.service.sonar_key }}
+          sources: ${{ matrix.service.project_path }}
+          project-version: ${{ github.head_ref || github.ref_name }}-${{ github.run_number }}
+          service-name: ${{ matrix.service.name }}
+          build-tool: ${{ matrix.service.build_tool || 'auto' }}
+          java-version: ${{ matrix.service.java_version || 'auto' }}
+          run-tests: ${{ format('{0}', matrix.service.run_tests) == 'false' && 'false' || 'true' }}
+          maven-args: ${{ matrix.service.maven_args }}
+          settings-file: ${{ matrix.service.settings_file }}
+          build-command: ${{ matrix.service.build_command }}
+          ignored-image: ${{ inputs.sonar_java_image }}
       - name: SonarQube Quality Gate Check (Java)
         id: java_gate
-        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') && steps.java_scan.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.java_scan.outcome == 'success' }}
         uses: taazaainc/TZ-DevOps-Global/.github/actions/sonar-quality-gate@master
         with:
           project-key: ${{ matrix.service.sonar_key }}
           service-name: ${{ matrix.service.name }}
           # waits for THIS analysis to finish (not a fixed sleep) and reads the gate of that analysis
+      # Failing unit tests do not stop the Sonar analysis above (a flaky test cannot hide the Sonar result);
+      # they make the job red here.
+      - name: Java unit tests
+        if: ${{ !cancelled() && steps.java_scan.outcome == 'success' && steps.java_scan.outputs.test-failures != '0' && steps.java_scan.outputs.test-failures != '' }}
+        env:
+          FAILED_TESTS: ${{ steps.java_scan.outputs.test-failures }}
+          SERVICE_NAME: ${{ matrix.service.name }}
+        run: |
+          echo "::error::$FAILED_TESTS unit test(s) failed for $SERVICE_NAME"
+          exit 1
 
       # Publishes the card: one status per check, then what to fix. Runs even when a check failed.
       - name: Publish result card

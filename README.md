@@ -3,6 +3,8 @@
 Centralized GitHub Actions and reusable workflows for Taazaa DevOps pipelines.
 Logic that is **identical across all repos** lives here — reference it from any repo's workflow instead of duplicating code.
 
+> **This repository is public.** Never commit credentials, internal hostnames, registry or image names, project or customer names, IP addresses or run ids. Callers pass those as variables and secrets. Every change goes through a pull request approved by a DevOps owner (CODEOWNERS).
+
 ---
 
 ## What's Here
@@ -10,11 +12,15 @@ Logic that is **identical across all repos** lives here — reference it from an
 | Type | Name | Path | Purpose |
 |------|------|------|---------|
 | Composite Action | `github-restrictions` | `.github/actions/github-restrictions` | PR gate: branch naming + forbidden file detection + PR size limits |
-| Composite Action | `gitleaks-scan` | `.github/actions/gitleaks-scan` | Secret scanning via GitLeaks |
-| Composite Action | `trivy-scan` | `.github/actions/trivy-scan` | Container image vulnerability scan via Trivy |
+| Composite Action | `gitleaks-scan` | `.github/actions/gitleaks-scan` | Secret scanning via Gitleaks (latest push and the PR's net change, central config and exceptions) |
+| Composite Action | `trivy-scan` | `.github/actions/trivy-scan` | Container image vulnerability scan via Trivy (blocks fixable CRITICAL and HIGH) |
+| Composite Action | `sonar-scan-cli` | `.github/actions/sonar-scan-cli` | SonarQube analysis with the official SonarScanner CLI image (pinned), for any non-.NET language; coverage reports picked up automatically |
+| Composite Action | `sonar-java-scan` | `.github/actions/sonar-java-scan` | Java: build and test in the official Maven image (Java version from the project), JaCoCo coverage, analysis with the official SonarScanner CLI. No custom image |
+| Composite Action | `sonar-quality-gate` | `.github/actions/sonar-quality-gate` | Waits for THIS run's Sonar analysis and checks its quality gate (fails closed) |
+| Composite Action | `scan-card` | `.github/actions/scan-card` | One short result card per service on the job summary page |
 | Composite Action | `validate-branch` | `.github/actions/validate-branch` | Branch naming only (lightweight, use github-restrictions instead) |
 | Reusable Workflow | `check-for-changes` | `.github/workflows/check-for-changes.yml` | Incremental change detection — outputs JSON list of changed services |
-| Reusable Workflow | `code-quality-security` | `.github/workflows/code-quality-security.yml` | SonarQube + Trivy + GitLeaks scan per changed service (matrix) |
+| Reusable Workflow | `code-quality-security` | `.github/workflows/code-quality-security.yml` | Gitleaks, then Trivy, then SonarQube, per changed service (matrix) |
 
 ---
 
@@ -87,8 +93,9 @@ Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each
 |-------|----------|-------------|
 | `runner` | No | JSON array of runner labels |
 | `changed_services` | No | JSON array from `check-for-changes` output. Pass `[]` to skip. |
-| `dotnet_container_image` | Yes | Docker image with .NET SDK + sonar-scanner. Store as `vars.DOTNET_CONTAINER_IMAGE` in caller. |
-| `sonar_nodejs_image` | Yes | Docker image for Node.js SonarQube scanning. Store as `vars.SONAR_NODEJS_IMAGE` in caller. |
+| `base_container_image` | Yes | Job container image (.NET SDK, docker CLI). Store as `vars.BASE_CONTAINER_IMAGE` in the caller. |
+| `sonar_nodejs_image` | No | **Deprecated**: accepted but no longer used. Non-.NET services are scanned with the official SonarScanner CLI image pinned in `policy/tool-versions.env`. |
+| `sonar_java_image` | No | **Deprecated**: accepted but no longer used. Java services are built in the official Maven image and analysed with the official SonarScanner CLI, both pinned in `policy/tool-versions.env`. |
 | `fail-on-critical` | No | Controls whether Trivy CRITICAL CVEs block the pipeline. See **Enabling / Disabling Trivy & GitLeaks blocking** below. |
 | `fail-on-secrets` | No | Controls whether GitLeaks secret findings block the pipeline. See **Enabling / Disabling Trivy & GitLeaks blocking** below. |
 
@@ -100,8 +107,10 @@ Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each
 | `SONAR_HOST_URL` | SonarQube server URL |
 | `TCR_USERNAME` | Container registry username (for pulling build container + Trivy image) |
 | `TCR_PASSWORD` | Container registry password |
+| `PRE_BUILD_AWS_ACCESS_KEY_ID` / `PRE_BUILD_AWS_SECRET_ACCESS_KEY` | Optional: only for repos whose pre-build hook downloads files before the Docker build |
+| `NEXUS_USERNAME` / `NEXUS_PASSWORD` | Optional: only for Java services that pull from a private Nexus |
 
-**Tool versions and exceptions are central:** Gitleaks and Trivy are installed fresh in every job from `policy/tool-versions.env` (newest stable release older than the cooldown, checksum verified). Ignore lists live in `policy/` (see `policy/README.md`). `vars.TRIVY_IMAGE` is no longer used.
+**Tool versions and exceptions are central:** Gitleaks and Trivy are installed fresh in every job from `policy/tool-versions.env` (pinned versions, SHA256 verified). The SonarScanner CLI image is pinned by digest in the same file. Ignore lists live in `policy/` (see `policy/README.md`). `vars.TRIVY_IMAGE` and `vars.SONAR_NODEJS_IMAGE` are no longer used.
 
 **variables.json — additional fields for scanning:**
 ```json
@@ -117,8 +126,26 @@ Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each
 }
 ```
 
-- Omit `scanner_type` (or set `null`) → .NET scanning path (sonar-scanner via dotnet)
-- Set `scanner_type: "nodejs"` → Node.js scanning path (runs SonarQube via Docker container)
+- Omit `scanner_type` (or set `null`) → .NET scanning path (sonar-scanner via dotnet, in the job container)
+- `scanner_type: "nodejs"`, `"generic"`, `"python"` or `"go"` → the official SonarScanner CLI (`sonar-scan-cli` action). It analyses JavaScript/TypeScript (Angular, React, Node), Python, Go, PHP, Ruby, HTML/CSS, YAML, Docker and more from source, with no image per language
+- `scanner_type: "java"` → the Java path (`sonar-java-scan` action), described below
+
+**SonarQube analysis for Java services (`sonar-java-scan`):**
+- **Build and test** in the official Maven image (Eclipse Temurin JDK). The Java version (8, 11, 17 or 21) is read from the project (`java.version`, `maven.compiler.release/source/target`), or set `java_version`. Gradle (wrapper) and any other build are supported through `build_tool` and `build_command`.
+- **Analysis** with the official SonarScanner CLI image (Java 21), from source, compiled classes and the JaCoCo report. Both images are pinned by digest in `policy/tool-versions.env`; no custom image has to be maintained.
+- **Coverage is automatic**: JaCoCo is added from the command line when the poms do not configure it, and the XML report is found under `target/site/jacoco/jacoco.xml` of every module. When developers add unit tests later, coverage appears without any change in the calling repo.
+- **The repository's own `sonar-project.properties` wins**: the central defaults (binaries `**/target/classes`, test binaries, libraries `**/target/dependency/*.jar`, JaCoCo path, exclusions, source level) are only added for keys the file does not set. Multi-module projects work with the defaults.
+- **Failing unit tests do not hide the Sonar result**: the analysis still runs and the quality gate is checked, then a separate step `Java unit tests` turns the job red.
+- **Private Maven repositories**: `NEXUS_USERNAME` and `NEXUS_PASSWORD` (org secrets) are passed to the build by name. Use them from a settings file in the repository through `${env.NEXUS_USERNAME}` and `${env.NEXUS_PASSWORD}` (key `settings_file`). Do not commit credentials.
+- **Isolation**: no host folder is mounted. The code is streamed into a throwaway Docker volume, built there, read by the scanner from the same volume, and the volume is deleted at the end. The scanner runs with all Linux capabilities dropped and `no-new-privileges`; the token is passed by environment name.
+- Optional keys per service in `variables.json`: `java_version`, `build_tool` (`auto`, `maven`, `gradle`, `custom`), `run_tests` (`false` skips the tests), `maven_args` (for example `-Pci`), `settings_file`, `build_command`. Gradle and `build_command` are provided for future projects and have not been exercised on a real project yet.
+
+**SonarQube analysis for non-.NET services (`sonar-scan-cli`):**
+- Same analysis settings for every service: project key and name (`sonar_key`), sources (`project_path`), project version (branch and run number), git SCM.
+- **Coverage is automatic**: when the tests wrote `lcov.info` (JS/TS), `coverage.xml` (Python, Cobertura) or `coverage.out` (Go) anywhere under the service folder, it is passed to Sonar. Without tests the scan still runs, without coverage. No change in the calling repo is needed when teams add tests.
+- **Isolation**: the scanner runs in a throwaway container as a non-root user with all Linux capabilities dropped and `no-new-privileges`. No host folder is mounted: the code is streamed into the container (without `node_modules`), and only the scanner's report comes back. The token is passed by environment name, never on a command line.
+- A failed scan fails the step and shows on the result card. The quality gate step then checks the gate of **this** run's analysis (it waits for Sonar to finish processing; no fixed sleep).
+- To move to a newer scanner: update `SONAR_SCANNER_CLI_IMAGE` (tag and digest) in `policy/tool-versions.env` through a pull request.
 
 **Jobs produced:**
 - `<ServiceName>-SCA & Security Scan` — one per changed service (dynamic name, not suitable for required checks)
@@ -133,8 +160,8 @@ code-quality-security:
   with:
     runner: '["self-hosted", "linux", "your-runner-label"]'
     changed_services: ${{ needs.github-restrictions.outputs.changed_services }}
-    dotnet_container_image: ${{ vars.DOTNET_CONTAINER_IMAGE }}
-    sonar_nodejs_image: ${{ vars.SONAR_NODEJS_IMAGE }}
+    base_container_image: ${{ vars.BASE_CONTAINER_IMAGE }}
+    # sonar_nodejs_image is no longer needed (still accepted, ignored)
     # fail-on-critical: 'false'  # override only if you need to bypass CRITICAL blocking for this repo
     # fail-on-secrets: 'false'   # override only if you need to bypass secret detection blocking for this repo
   secrets:
