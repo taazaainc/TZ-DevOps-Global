@@ -12,9 +12,13 @@
 #   coverage.out  -> sonar.go.coverage.reportPaths       (Go)
 # No report found = analysis without coverage (not an error).
 #
-# Isolation: throwaway container (--rm), image user (uid 1000, not root), no Linux capabilities,
-# no privilege escalation, token passed by environment name only (never on a command line),
+# Isolation: throwaway container (--rm), all Linux capabilities dropped except DAC_OVERRIDE, no privilege
+# escalation, no Docker socket, not privileged, token passed by environment name only (never on a command line),
 # work folder inside the workspace so the quality gate step finds report-task.txt of THIS run.
+# User: root inside the container. The job container checks out the code as root (often root-only folders),
+# while the workspace folder itself may belong to the runner user: the image user (uid 1000) cannot read the
+# first, and root without DAC_OVERRIDE cannot write into the second. Root-owned .scannerwork files are removed
+# by the workflow's "Cleanup root-owned workspace artifacts" step.
 #
 # Env in (from the action): SONAR_HOST_URL SONAR_TOKEN PROJECT_KEY SOURCES PROJECT_VERSION SERVICE
 #   HOST_WORKSPACE (host path of the workspace, for the docker mount)  WORKSPACE (same folder as seen here)
@@ -60,6 +64,7 @@ if [ -n "$found" ]; then echo "Coverage reports:$found"
 else echo "Coverage reports: none found (tests that write coverage/lcov.info, coverage.xml or coverage.out are picked up automatically)"; fi
 
 echo "Scanner image: $SCANNER_IMAGE"
+echo "Workspace owner/mode: $(stat -c '%U:%G %a' "$WORKSPACE" 2>/dev/null) | sources owner/mode: $(stat -c '%U:%G %a' "$WORKSPACE/$src_rel" 2>/dev/null)"
 echo "Project: $PROJECT_KEY | sources: $SOURCES | version: ${PROJECT_VERSION:-unknown}"
 pulled=0
 for i in 1 2 3; do docker pull -q "$SCANNER_IMAGE" >/dev/null 2>&1 && { pulled=1; break; }; sleep $((i * 5)); done
@@ -67,8 +72,8 @@ for i in 1 2 3; do docker pull -q "$SCANNER_IMAGE" >/dev/null 2>&1 && { pulled=1
   || fail "could not pull $SCANNER_IMAGE" "The Sonar scanner image could not be downloaded"
 
 docker run --rm \
-  --cap-drop ALL --security-opt no-new-privileges \
-  -e SONAR_HOST_URL -e SONAR_TOKEN \
+  --user 0:0 --cap-drop ALL --cap-add DAC_OVERRIDE --security-opt no-new-privileges \
+  -e SONAR_HOST_URL -e SONAR_TOKEN -e SONAR_USER_HOME=/tmp/.sonar \
   -e SCANNER_WORKDIR_PATH=/usr/src/.scannerwork \
   -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0='*' \
   -v "$HOST_WORKSPACE:/usr/src" \
