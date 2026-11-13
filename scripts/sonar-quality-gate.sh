@@ -15,11 +15,14 @@
 #         REPORT_FILE (optional)  START_MARKER (optional file; the report must be newer than it)
 set -uo pipefail
 
+. "$(dirname "${BASH_SOURCE[0]}")/card-lib.sh"
 MODE="${MODE:-block}"; SERVICE="${SERVICE:-service}"; WORKSPACE="${WORKSPACE:-$PWD}"
 TIMEOUT="${TIMEOUT_SEC:-600}"; SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/null}"
 [[ "$TIMEOUT" =~ ^[0-9]+$ ]] && [ "$TIMEOUT" -gt 0 ] || { echo "::error::invalid timeout '$TIMEOUT'"; exit 1; }
 
 problem() {   # $1 message; blocks in block mode, warns in warn mode
+  local icon="🔴"; [ "$MODE" = "block" ] || icon="🟡"
+  card_row sonar "$icon" "${2:-$1}"
   if [ "$MODE" = "block" ]; then echo "::error::$1"; return 1; fi
   echo "::warning::$1 (mode=warn, not blocking)"; return 0
 }
@@ -36,7 +39,7 @@ if [ -z "$REPORT" ]; then
   done < <(find "$WORKSPACE" -name report-task.txt -not -path '*/node_modules/*' -print0 2>/dev/null | xargs -0 -r ls -t 2>/dev/null)
 fi
 if [ -z "$REPORT" ] || [ ! -f "$REPORT" ]; then
-  problem "No fresh Sonar report-task.txt found for project '${PROJECT_KEY:-?}': the scan did not produce a report, so the quality gate cannot be checked"; exit $?
+  problem "No fresh Sonar report-task.txt found for project '${PROJECT_KEY:-?}': the scan did not produce a report, so the quality gate cannot be checked" "The Sonar scan did not produce a report"; exit $?
 fi
 val() { sed -n "s/^$1=//p" "$REPORT" | head -n1 | tr -d '\r'; }
 CE_URL="$(val ceTaskUrl)"; SERVER="$(val serverUrl)"; DASH="$(val dashboardUrl)"
@@ -77,14 +80,19 @@ if ! resp="$(api "$SERVER/api/qualitygates/project_status?analysisId=${AID}" 2>/
 fi
 gate="$(jq -r '.projectStatus.status // "UNKNOWN"' <<<"$resp")"
 echo "Quality gate of this analysis: $gate"
-{ echo "### Sonar quality gate: $SERVICE"; echo "- status: **$gate** (analysis \`$AID\`)"; [ -n "$DASH" ] && echo "- dashboard: $DASH"; } >> "$SUMMARY"
+# (no tool/analysis details in the card: developers only need the result)
 
 case "$gate" in
-  OK)   echo "Quality gate PASSED for $SERVICE"; exit 0 ;;
-  WARN) echo "::warning::Quality gate has warnings for $SERVICE ($DASH)"; exit 0 ;;
+  OK)   echo "Quality gate PASSED for $SERVICE"; card_row sonar "🟢" "Quality gate passed"; exit 0 ;;
+  WARN) echo "::warning::Quality gate has warnings for $SERVICE"; card_row sonar "🟡" "Quality gate passed with warnings"; exit 0 ;;
   ERROR)
     echo "Failed conditions:"
     jq -r '.projectStatus.conditions[]? | select(.status=="ERROR") | "  - \(.metricKey): actual \(.actualValue // "n/a"), required \(.comparator) \(.errorThreshold)"' <<<"$resp" | head -20
-    problem "Quality gate FAILED for $SERVICE ($DASH)"; exit $? ;;
-  *)    problem "Quality gate status '$gate' for $SERVICE: no gate is set on the Sonar project, or the result is unknown"; exit $? ;;
+    NC="$(jq '[.projectStatus.conditions[]? | select(.status=="ERROR")] | length' <<<"$resp")"
+    { echo "<details open><summary>Quality gate conditions that failed ($NC)</summary>"; echo
+      echo "| Measure | Your value | Required |"; echo "|---|---|---|"
+      jq -r '.projectStatus.conditions[]? | select(.status=="ERROR") | "| \(.metricKey) | \(.actualValue // "n/a") | \(.comparator) \(.errorThreshold) |"' <<<"$resp" | head -15
+      echo; echo "Open the project in SonarQube for details: \`${PROJECT_KEY}\`"; echo "</details>"; } | card_detail sonar
+    problem "Quality gate FAILED for $SERVICE" "Quality gate failed: $NC condition(s)"; exit $? ;;
+  *)    problem "Quality gate status '$gate' for $SERVICE: no gate is set on the Sonar project, or the result is unknown" "No quality gate result (no gate set on the project, or unknown)"; exit $? ;;
 esac

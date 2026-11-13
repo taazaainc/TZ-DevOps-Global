@@ -77,6 +77,4 @@ chmod +x "$TOOL"
 [ -n "${GITHUB_PATH:-}" ] && echo "$DEST" >> "$GITHUB_PATH"
 export PATH="$DEST:$PATH"
 "$TOOL" --version | head -n 3
-{
-  echo "- **$TOOL** \`$V\` (policy: $WANT, cooldown ${COOLDOWN_DAYS}d, minimum $MIN_VER)"
-} >> "${GITHUB_STEP_SUMMARY:-/dev/null}"
+echo "$TOOL $V installed (policy: $WANT)"   # version stays in the job log only; the summary card is for developers
