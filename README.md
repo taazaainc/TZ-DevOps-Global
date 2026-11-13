@@ -231,7 +231,7 @@ github-restrictions:
 Scans a pre-built **local** Docker image with Trivy. Fails closed. Settings, version and ignore list are central; nothing is read from the scanned repo.
 
 - Vulnerability database is downloaded in the job; the job fails if the download fails or the DB is older than `max-db-age-hours`.
-- Blocks on **fixable** CRITICAL and HIGH vulnerabilities (`gate-severity`) and on secrets baked into the image (`image-secrets`). Unfixed findings are listed but do not block.
+- Blocks **only** on fixable CRITICAL and HIGH image vulnerabilities (`gate-severity`), or when Trivy or its database fail. Unfixed findings are counted but do not block. Secrets in the image are off by default (`image-secrets`).
 - Also reports dependency vulnerabilities from the repo's lock files (`fs-scan`) and Dockerfile / Helm / Kubernetes configuration issues (`misconfig`).
 - Ignore list: `policy/trivy/<owner>__<repo>.trivyignore.yaml` (entries need an expiry date).
 - Use an image tag that is unique per job (the reusable workflow uses `scan-<run id>-<attempt>-<job index>`).
@@ -244,7 +244,7 @@ Scans a pre-built **local** Docker image with Trivy. Fails closed. Settings, ver
 | `service-name` | Yes | — | Used in messages |
 | `fail-on-critical` | No | `true` | `true` blocks, `false` only warns (name kept for compatibility) |
 | `gate-severity` | No | `CRITICAL,HIGH` | Severities that block (fixable findings only) |
-| `image-secrets` | No | `block` | `off` / `report` / `block` |
+| `image-secrets` | No | `off` | `off` / `report` / `block` (Gitleaks is the secret scanner) |
 | `fs-scan` | No | `report` | `off` / `report` / `block` |
 | `misconfig` | No | `report` | `off` / `report` |
 | `scan-path` | No | `.` | Folder in the workspace for the repo scans |
