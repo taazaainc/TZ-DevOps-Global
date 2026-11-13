@@ -22,9 +22,9 @@ inputs:
     required: false
     default: "CRITICAL,HIGH"
   image-secrets:
-    description: off | report | block  (secrets found inside the image layers)
+    description: off | report | block  (secrets found inside the image layers; off by default, Gitleaks is the secret scanner)
     required: false
-    default: "block"
+    default: "off"
   fs-scan:
     description: off | report | block  (dependency vulnerabilities from the repo's lock files)
     required: false
