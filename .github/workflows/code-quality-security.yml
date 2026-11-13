@@ -29,7 +29,9 @@ on:
         type: string
       sonar_nodejs_image:
         description: >
-          Docker image used to run SonarQube analysis for Node.js/UI services.
+          DEPRECATED, accepted but no longer used: Node.js/UI (and other non-.NET) services are scanned
+          with the official SonarScanner CLI image pinned centrally in policy/tool-versions.env.
+          Was: Docker image used to run SonarQube analysis for Node.js/UI services.
           Must be an input (not secret) — GitHub disallows secrets context in
           with: of reusable workflow calls.
           Store as a repo variable (vars.SONAR_NODEJS_IMAGE) in the caller.
@@ -284,24 +286,23 @@ jobs:
           service-name: ${{ matrix.service.name }}
           # waits for THIS analysis to finish (not a fixed sleep) and reads the gate of that analysis
 
+      # Sonar for non-.NET services, with the official SonarScanner CLI image pinned in policy/tool-versions.env.
+      # Language independent (JS/TS, Python, Go, PHP, Ruby, ...); coverage reports are picked up when present.
+      # The caller's sonar_nodejs_image input is still accepted but no longer used (callers stay unchanged).
       - name: SonarQube Scan for Node.js/UI
         id: node_scan
-        if: ${{ !cancelled() && (matrix.service.scanner_type == 'nodejs') }}
-        continue-on-error: true
-        run: |
-          docker run --rm \
-            -e SONAR_HOST_URL="$SONAR_HOST_URL" \
-            -e SONAR_TOKEN="$SONAR_TOKEN" \
-            -e EXTRA_ARGS="-Dsonar.projectKey=${{ matrix.service.sonar_key }} \
-                          -Dsonar.projectName=${{ matrix.service.sonar_key }} \
-                          -Dsonar.sources=$MAIN_PROJECT_PATH \
-                          -Dsonar.projectVersion=${{ github.head_ref || github.ref_name }}-${{ github.run_number }} \
-                          -Dsonar.verbose=true" \
-            -v "${{ github.workspace }}:/usr/src" \
-            $SONAR_NODEJS_IMAGE
+        if: ${{ !cancelled() && contains(fromJson('["nodejs","generic","python","go"]'), matrix.service.scanner_type) }}
+        uses: taazaainc/TZ-DevOps-Global/.github/actions/sonar-scan-cli@master
+        with:
+          project-key: ${{ matrix.service.sonar_key }}
+          sources: ${{ matrix.service.project_path }}
+          project-version: ${{ github.head_ref || github.ref_name }}-${{ github.run_number }}
+          service-name: ${{ matrix.service.name }}
+          host-workspace: ${{ github.workspace }}
+          ignored-image: ${{ inputs.sonar_nodejs_image }}
       - name: SonarQube Quality Gate Check (Node.js)
         id: node_gate
-        if: ${{ !cancelled() && (matrix.service.scanner_type == 'nodejs') && steps.node_scan.conclusion == 'success' }}
+        if: ${{ !cancelled() && steps.node_scan.outcome == 'success' }}
         uses: taazaainc/TZ-DevOps-Global/.github/actions/sonar-quality-gate@master
         with:
           project-key: ${{ matrix.service.sonar_key }}
