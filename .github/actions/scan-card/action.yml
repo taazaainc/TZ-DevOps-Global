@@ -19,4 +19,5 @@ runs:
       env:
         MODE: ${{ inputs.mode }}
         SERVICE: ${{ inputs.service-name }}
-      run: bash "$GITHUB_ACTION_PATH/../../../scripts/scan-card.sh"
+      # a problem with the card must never fail the pipeline
+      run: bash "$GITHUB_ACTION_PATH/../../../scripts/scan-card.sh" || echo "::warning::result card could not be built"

@@ -16,5 +16,9 @@ if grep -q '^🔴' "$CARD_DIR"/*.row 2>/dev/null; then HEAD="🔴"; elif grep -q
 {
   echo "### $HEAD $SERVICE"; echo
   echo "| Check | Result |"; echo "|---|---|"; echo "$TABLE"; echo
-  for t in gitleaks trivy trivy-secrets sonar; do [ -f "$CARD_DIR/$t.md" ] && { cat "$CARD_DIR/$t.md"; echo; }; done
+  for t in gitleaks trivy trivy-secrets sonar; do
+    if [ -f "$CARD_DIR/$t.md" ]; then cat "$CARD_DIR/$t.md"; echo; fi
+  done
 } >> "$OUT"
+# the card must never fail the job: always exit 0
+exit 0
