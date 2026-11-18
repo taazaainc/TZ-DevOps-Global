@@ -4,8 +4,11 @@ description: >
   project) and analyses it with the official SonarScanner CLI image. Both images are pinned by digest in
   policy/tool-versions.env. No custom image and no host folder mount. Coverage (JaCoCo) is added automatically.
   A repository's own sonar-project.properties overrides the defaults. Needs SONAR_TOKEN and SONAR_HOST_URL in the
-  job environment; NEXUS_USERNAME and NEXUS_PASSWORD are passed to the build when present. Run the quality gate
-  action after it.
+  job environment. NEXUS_USERNAME and NEXUS_PASSWORD are passed to the build when present; for every repository
+  id of the project poms that points to a private (non public) host a Maven server entry is generated inside the
+  build container (no file in the repository, no secret on disk). Extra ids, for example ids declared only by a
+  parent pom, can be given in the environment variable MAVEN_PRIVATE_REPO_IDS (comma separated). A settings-file
+  input of the repository takes full control. Run the quality gate action after it.
 
 inputs:
   project-key:

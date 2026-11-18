@@ -93,7 +93,7 @@ Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each
 |-------|----------|-------------|
 | `runner` | No | JSON array of runner labels |
 | `changed_services` | No | JSON array from `check-for-changes` output. Pass `[]` to skip. |
-| `base_container_image` | Yes | Job container image (.NET SDK, docker CLI). Store as `vars.BASE_CONTAINER_IMAGE` in the caller. |
+| `base_container_image` | No | Job container image (.NET SDK, docker CLI). When empty, the workflow reads the organisation/repository variable `BASE_CONTAINER_IMAGE` itself; an explicit value wins. |
 | `sonar_nodejs_image` | No | **Deprecated**: accepted but no longer used. Non-.NET services are scanned with the official SonarScanner CLI image pinned in `policy/tool-versions.env`. |
 | `sonar_java_image` | No | **Deprecated**: accepted but no longer used. Java services are built in the official Maven image and analysed with the official SonarScanner CLI, both pinned in `policy/tool-versions.env`. |
 | `fail-on-critical` | No | Controls whether Trivy CRITICAL CVEs block the pipeline. See **Enabling / Disabling Trivy & GitLeaks blocking** below. |
@@ -126,17 +126,17 @@ Runs GitLeaks, a Docker build with a Trivy scan, and SonarQube analysis for each
 }
 ```
 
-- Omit `scanner_type` (or set `null`) → .NET scanning path (sonar-scanner via dotnet, in the job container)
+- Omit `scanner_type` (or set `null`) → .NET scanning path (sonar-scanner via dotnet, in the job container), **except** when the service has `"language": "java"` (case-insensitive): then the Java path is used. An explicit `scanner_type` always wins. The effective scanner is computed once per job (`SCANNER_TYPE_EFFECTIVE`)
 - `scanner_type: "nodejs"`, `"generic"`, `"python"` or `"go"` → the official SonarScanner CLI (`sonar-scan-cli` action). It analyses JavaScript/TypeScript (Angular, React, Node), Python, Go, PHP, Ruby, HTML/CSS, YAML, Docker and more from source, with no image per language
 - `scanner_type: "java"` → the Java path (`sonar-java-scan` action), described below
 
 **SonarQube analysis for Java services (`sonar-java-scan`):**
 - **Build and test** in the official Maven image (Eclipse Temurin JDK). The Java version (8, 11, 17 or 21) is read from the project (`java.version`, `maven.compiler.release/source/target`), or set `java_version`. Gradle (wrapper) and any other build are supported through `build_tool` and `build_command`.
 - **Analysis** with the official SonarScanner CLI image (Java 21), from source, compiled classes and the JaCoCo report. Both images are pinned by digest in `policy/tool-versions.env`; no custom image has to be maintained.
-- **Coverage is automatic**: JaCoCo is added from the command line when the poms do not configure it, and the XML report is found under `target/site/jacoco/jacoco.xml` of every module. When developers add unit tests later, coverage appears without any change in the calling repo.
+- **Coverage is automatic**: JaCoCo is added when the poms do not bind it (also when it is only declared in `pluginManagement` or a profile), an `argLine` in the Surefire/Failsafe configuration that would drop the agent is bypassed, all JaCoCo XML reports are found wherever the build wrote them, and when tests live in a separate module one report is built from all execution data. Gradle projects get the `jacoco` plugin through an init script. Tests that need a database or Docker do not work in the build container; `skipTests` in the pom disables coverage (a warning is printed). When developers add unit tests later, coverage appears without any change in the calling repo.
 - **The repository's own `sonar-project.properties` wins**: the central defaults (binaries `**/target/classes`, test binaries, libraries `**/target/dependency/*.jar`, JaCoCo path, exclusions, source level) are only added for keys the file does not set. Multi-module projects work with the defaults.
 - **Failing unit tests do not hide the Sonar result**: the analysis still runs and the quality gate is checked, then a separate step `Java unit tests` turns the job red.
-- **Private Maven repositories**: `NEXUS_USERNAME` and `NEXUS_PASSWORD` (org secrets) are passed to the build by name. Use them from a settings file in the repository through `${env.NEXUS_USERNAME}` and `${env.NEXUS_PASSWORD}` (key `settings_file`). Do not commit credentials.
+- **Private Maven repositories**: `NEXUS_USERNAME` and `NEXUS_PASSWORD` (org secrets) are passed to the build by name. Use them from a settings file in the repository through `${env.NEXUS_USERNAME}` and `${env.NEXUS_PASSWORD}` (key `settings_file`). Without a settings file, a Maven settings file is generated inside the build container (never in the repository; placeholders only, the values come from the container environment) with one server entry per repository id of the project poms that points to a non-public host. Ids declared only by a parent pom can be listed in the environment variable `MAVEN_PRIVATE_REPO_IDS` (comma separated). Do not commit credentials.
 - **Isolation**: no host folder is mounted. The code is streamed into a throwaway Docker volume, built there, read by the scanner from the same volume, and the volume is deleted at the end. The scanner runs with all Linux capabilities dropped and `no-new-privileges`; the token is passed by environment name.
 - Optional keys per service in `variables.json`: `java_version`, `build_tool` (`auto`, `maven`, `gradle`, `custom`), `run_tests` (`false` skips the tests), `maven_args` (for example `-Pci`), `settings_file`, `build_command`. Gradle and `build_command` are provided for future projects and have not been exercised on a real project yet.
 
@@ -170,6 +170,19 @@ code-quality-security:
     TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
     TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
 ```
+
+**Thin caller (recommended for new repos):** pass only the runner and the changed services and inherit the secrets. The base image comes from the organisation variable `BASE_CONTAINER_IMAGE`; new tools added centrally need no change in the caller.
+```yaml
+code-quality-security:
+  uses: taazaainc/TZ-DevOps-Global/.github/workflows/code-quality-security.yml@master
+  needs: [github-restrictions]
+  if: github.event_name == 'pull_request' && (startsWith(github.head_ref, 'feature/') || startsWith(github.head_ref, 'release/'))
+  with:
+    runner: '["self-hosted", "linux", "your-runner-label"]'
+    changed_services: ${{ needs.github-restrictions.outputs.changed_services }}
+  secrets: inherit
+```
+Callers with explicit inputs and an explicit secrets list keep working unchanged. `secrets: inherit` gives the called workflow every secret visible to the caller; see the security note in the design notes.
 
 **Enabling / Disabling Trivy & GitLeaks blocking:**
 

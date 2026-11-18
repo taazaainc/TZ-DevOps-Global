@@ -22,10 +22,12 @@ on:
         description: >
           Docker image for the job container (.NET scanning + Trivy builds).
           Must have dotnet SDK, sonar-scanner, docker CLI available.
-          Must be an input (not secret) — GitHub disallows secrets context in
-          container.image and in with: of reusable workflow calls.
-          Store as a repo variable (vars.BASE_CONTAINER_IMAGE) in the caller.
-        required: true
+          Optional: when empty (thin caller) the workflow reads the organisation or repository
+          variable BASE_CONTAINER_IMAGE itself (the vars context of a called workflow is the
+          caller's). An explicit value passed here always wins (existing callers keep working).
+          Must not be a secret: GitHub disallows the secrets context in container.image.
+        required: false
+        default: ''
         type: string
       sonar_nodejs_image:
         description: >
@@ -89,11 +91,13 @@ on:
         description: >
           Nexus repository username for resolving private Maven dependencies.
           Only required for repos with Java services that pull from a private Nexus.
+          Not needed from a caller that uses secrets: inherit.
         required: false
       NEXUS_PASSWORD:
         description: >
           Nexus repository password for resolving private Maven dependencies.
           Only required for repos with Java services that pull from a private Nexus.
+          Not needed from a caller that uses secrets: inherit.
         required: false
     outputs:
       passed_services:
@@ -138,13 +142,16 @@ jobs:
       TCR_USERNAME: ${{ secrets.TCR_USERNAME }}
       TCR_PASSWORD: ${{ secrets.TCR_PASSWORD }}
       SONAR_NODEJS_IMAGE: ${{ inputs.sonar_nodejs_image }}
+      # Effective scanner, computed once and used by every step condition below: the service's scanner_type
+      # when set, otherwise java when its language is java (case-insensitive), otherwise empty = .NET path.
+      SCANNER_TYPE_EFFECTIVE: ${{ matrix.service.scanner_type || (matrix.service.language == 'java' && 'java' || '') }}
       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
       # unique per repo run, attempt and matrix job: shared Docker daemons must never mix up scan images
       SCAN_IMAGE_TAG: scan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
 
     container:
-      image: ${{ inputs.base_container_image }}
+      image: ${{ inputs.base_container_image || vars.BASE_CONTAINER_IMAGE }}
       options: >-
         --privileged
         -v /var/run/docker.sock:/var/run/docker.sock
@@ -168,6 +175,7 @@ jobs:
           echo "Service: ${{ matrix.service.name }}"
           echo "Project Path: $MAIN_PROJECT_PATH"
           echo ".NET Version: $DOTNET_VERSION"
+          echo "Scanner: ${SCANNER_TYPE_EFFECTIVE:-dotnet}"
           echo "SonarQube Project: $SONAR_PROJECT_KEY"
           echo ""
           echo "Available .NET SDKs:"
@@ -259,7 +267,7 @@ jobs:
           else
             echo "No pre_build_script defined -- skipping cleanup."
           fi
-      # .NET Service Scanning (all services except UI with scanner_type: 'nodejs')
+      # .NET Service Scanning (services whose effective scanner is empty; see SCANNER_TYPE_EFFECTIVE above)
       # Marks the start of the Sonar work, so the quality gate check only accepts a report written after it.
       - name: Mark Sonar start
         if: ${{ !cancelled() }}
@@ -267,15 +275,15 @@ jobs:
 
       - name: Add Missing Test Packages
         id: dn_pkgs
-        if: ${{ !cancelled() && (!matrix.service.scanner_type) }}
+        if: ${{ !cancelled() && (!env.SCANNER_TYPE_EFFECTIVE) }}
         run: bash /scripts/add-missing-packages.sh
       - name: Run SonarQube Build, Test & Analysis
         id: dn_run
-        if: ${{ !cancelled() && (!matrix.service.scanner_type) && steps.dn_pkgs.outcome == 'success' }}
+        if: ${{ !cancelled() && (!env.SCANNER_TYPE_EFFECTIVE) && steps.dn_pkgs.outcome == 'success' }}
         run: bash /scripts/dotnet-build-test-sonarqube.sh
       - name: SonarQube Quality Gate Check
         id: dn_gate
-        if: ${{ !cancelled() && (!matrix.service.scanner_type) && steps.dn_run.outcome == 'success' }}
+        if: ${{ !cancelled() && (!env.SCANNER_TYPE_EFFECTIVE) && steps.dn_run.outcome == 'success' }}
         uses: taazaainc/TZ-DevOps-Global/.github/actions/sonar-quality-gate@master
         with:
           project-key: ${{ matrix.service.sonar_key }}
@@ -287,7 +295,7 @@ jobs:
       # The caller's sonar_nodejs_image input is still accepted but no longer used (callers stay unchanged).
       - name: SonarQube Scan for Node.js/UI
         id: node_scan
-        if: ${{ !cancelled() && contains(fromJson('["nodejs","generic","python","go"]'), matrix.service.scanner_type) }}
+        if: ${{ !cancelled() && contains(fromJson('["nodejs","generic","python","go"]'), env.SCANNER_TYPE_EFFECTIVE) }}
         uses: taazaainc/TZ-DevOps-Global/.github/actions/sonar-scan-cli@master
         with:
           project-key: ${{ matrix.service.sonar_key }}
@@ -311,7 +319,7 @@ jobs:
       # java_version, build_tool, run_tests, maven_args, settings_file, build_command.
       - name: SonarQube Scan for Java
         id: java_scan
-        if: ${{ !cancelled() && (matrix.service.scanner_type == 'java') }}
+        if: ${{ !cancelled() && (env.SCANNER_TYPE_EFFECTIVE == 'java') }}
         uses: taazaainc/TZ-DevOps-Global/.github/actions/sonar-java-scan@master
         with:
           project-key: ${{ matrix.service.sonar_key }}

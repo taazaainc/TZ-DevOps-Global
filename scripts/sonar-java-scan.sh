@@ -13,17 +13,39 @@
 #   BUILD_TOOL       auto (pom.xml = maven, gradle files = gradle) | maven | gradle
 #   RUN_TESTS        true (default) | false
 #   MAVEN_ARGS       extra Maven arguments, for example a profile: -Pci
-#   SETTINGS_FILE    optional Maven settings file inside the repo (may use ${env.NEXUS_USERNAME} and ${env.NEXUS_PASSWORD})
+#   SETTINGS_FILE    optional Maven settings file inside the repo (may use ${env.NEXUS_USERNAME} and ${env.NEXUS_PASSWORD});
+#                    when set, it has full control and no settings are generated
+#   MAVEN_PRIVATE_REPO_IDS  optional, comma separated Maven repository ids that need the NEXUS credentials although the
+#                    project poms do not declare them (for example ids declared only by a parent pom in a private repository)
 #   BUILD_COMMAND    full override of the build command (runs in the build image from the project folder)
 #   EXTRA_SONAR_ARGS extra scanner arguments
-# Coverage: JaCoCo is added from the command line when the poms do not configure it; the XML report is found
-# automatically. Tests: failing unit tests do NOT stop the Sonar analysis (so a single flaky test cannot hide the
+# Coverage: JaCoCo is added from the command line when the poms do not bind it (also when it is only declared in
+# pluginManagement or an inactive profile); a literal argLine in the Surefire/Failsafe configuration is bypassed with the
+# JaCoCo agent through JAVA_TOOL_OPTIONS; every JaCoCo XML report is found automatically, and when tests live in a separate
+# module one report is built from all execution data; Gradle gets JaCoCo through an init script. Tests: failing unit tests do NOT stop the Sonar analysis (so a single flaky test cannot hide the
 # Sonar result); they are reported in the output "test-failures" and the workflow fails the job afterwards.
+#
+# Private Maven repositories: when NEXUS_USERNAME and NEXUS_PASSWORD are set and no settings file is given, a Maven
+# settings file is generated INSIDE the build container (never in the repository, never on a command line, mode 600,
+# removed at the end). It holds one <server> per repository id found in <repositories>, <pluginRepositories> and
+# <distributionManagement> of the project poms whose URL host is not a well-known public host (PUBLIC_MAVEN_HOSTS
+# below), plus MAVEN_PRIVATE_REPO_IDS. Username and password are the placeholders ${env.NEXUS_USERNAME} and
+# ${env.NEXUS_PASSWORD}: Maven reads the values from the container environment, no secret is written to disk.
+# Ids that are property placeholders are skipped. The credentials are never configured for public hosts.
+#
+# Build log: for Maven only the command line, warnings and errors, a test summary per module and the build result
+# are printed; when the build fails the last 200 lines of the full output follow (BUILD_COMMAND and Gradle keep the full log).
+#
+# Test hooks (harmless, off by default): TZ_TEST_STOP_AFTER_BUILD=1 stops after a successful build, before the scanner
+# (used by the local tests); TZ_SHOW_SETTINGS=1 prints the generated settings file (placeholders only, no secret).
 #
 # Env in: SONAR_HOST_URL SONAR_TOKEN PROJECT_KEY SOURCES PROJECT_VERSION SERVICE WORKSPACE POLICY_FILE
 #         NEXUS_USERNAME NEXUS_PASSWORD (optional, passed to the build by name)  GITHUB_OUTPUT (optional)
 set -uo pipefail
 . "$(dirname "${BASH_SOURCE[0]}")/card-lib.sh"
+
+# Hosts that never get the private repository credentials (space separated, exact host names).
+PUBLIC_MAVEN_HOSTS="repo.maven.apache.org repo1.maven.org central.sonatype.com plugins.gradle.org jitpack.io maven.google.com dl.google.com repo.spring.io oss.sonatype.org s01.oss.sonatype.org packages.confluent.io repository.jboss.org repo.jenkins-ci.org repository.apache.org maven.pkg.github.com"
 
 fail() { card_row sonar "🔴" "$2"; echo "::error::$1"; exit 1; }
 [ -n "${SONAR_TOKEN:-}" ]    || fail "SONAR_TOKEN is not set" "Sonar is not configured (no token)"
@@ -104,29 +126,118 @@ copy_rc=("${PIPESTATUS[@]}")
 # ---- 4) build and test (official Maven image, runs as root inside a throwaway container, volume only)
 case "$BUILD_TOOL" in
   maven)
-    BUILD_SCRIPT='set -u
+    IFS= read -r -d '' BUILD_SCRIPT <<'EOS' || true
+set -u
 cd "/ws/$SRC_DIR" || exit 90
-ARGS=(-B -ntp)
+TZ_SETTINGS=""
+trap '[ -z "$TZ_SETTINGS" ] || rm -f "$TZ_SETTINGS"' EXIT
+
+# Maven settings with credentials for the private repositories of the project (see the header of the script)
+gen_settings() {
+  local flat recs rec id url host i name val extra v ids="" pub="" priv="" forced="" final=""
+  flat="$(find /ws \( -name node_modules -o -name target -o -name .git \) -prune -o -name pom.xml -type f -print0 2>/dev/null \
+    | xargs -0 -r cat 2>/dev/null | tr '\r\n\t' '   ' | sed -E 's/<!--([^-]|-[^-])*-->//g')"
+  recs="$(printf '%s' "$flat" | sed -E 's#</(repository|pluginRepository|snapshotRepository)>#&\n#g' \
+    | sed -nE 's#^.*<(repository|pluginRepository|snapshotRepository)>(.*)</\1>$#\2#p')"
+  while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    id="$(printf '%s' "$rec" | sed -nE 's#.*<id>[[:space:]]*([^<]*[^<[:space:]])[[:space:]]*</id>.*#\1#p' | head -n1)"
+    url="$(printf '%s' "$rec" | sed -nE 's#.*<url>[[:space:]]*([^<]*[^<[:space:]])[[:space:]]*</url>.*#\1#p' | head -n1)"
+    [ -n "$id" ] && [ -n "$url" ] || continue
+    if [[ ! "$id" =~ ^[A-Za-z0-9._-]+$ ]]; then echo "[tz] repository id skipped (not a literal id): $id"; continue; fi
+    for i in 1 2 3; do   # resolve ${property} in the URL from the poms, only to find the host
+      [[ "$url" == *'${'* ]] || break
+      name="$(printf '%s' "$url" | sed -nE 's#^.*\$\{([A-Za-z0-9_.-]+)\}.*$#\1#p')"
+      [ -n "$name" ] || break
+      val="$(printf '%s' "$flat" | grep -oE "<${name//./[.]}>[^<]*</${name//./[.]}>" | head -n1 | sed -E 's#^<[^>]*>##; s#<[^>]*>$##; s#^ +##; s# +$##')"
+      [ -n "$val" ] || break
+      url="${url//\$\{$name\}/$val}"
+    done
+    if [[ "$url" == *'${'* ]]; then echo "[tz] repository $id skipped (URL is a property that cannot be resolved; use MAVEN_PRIVATE_REPO_IDS)"; continue; fi
+    host="$(printf '%s' "$url" | sed -E 's#^[A-Za-z][A-Za-z0-9+.-]*://##; s|[/?#].*$||; s#^.*@##; s#:[0-9]*$##' | tr 'A-Z' 'a-z')"
+    [ -n "$host" ] || continue
+    case " $TZ_PUBLIC_HOSTS " in *" $host "*) pub="$pub $id";; *) priv="$priv $id";; esac
+  done <<< "$recs"
+  IFS=',' read -r -a extra <<< "${TZ_PRIVATE_IDS:-}"
+  for v in "${extra[@]}"; do
+    v="${v//[[:space:]]/}"; [ -n "$v" ] || continue
+    if [[ ! "$v" =~ ^[A-Za-z0-9._-]+$ ]] || [ "$v" = central ]; then echo "[tz] MAVEN_PRIVATE_REPO_IDS entry ignored: $v"; continue; fi
+    forced="$forced $v"
+  done
+  for id in $(printf '%s\n' $priv | sort -u); do
+    case " $pub " in *" $id "*) echo "[tz] repository $id also points to a public host: no credentials for it";; *) final="$final $id";; esac
+  done
+  for id in $forced; do case " $final " in *" $id "*) ;; *) final="$final $id";; esac; done
+  ids="$(printf '%s\n' $final | sort -u | tr '\n' ' ')"; ids="${ids% }"
+  if [ -z "$ids" ]; then
+    echo "[tz] Maven credentials: no private repository id found in the poms (parent pom only? set MAVEN_PRIVATE_REPO_IDS); no server entries added"
+    return 0
+  fi
+  umask 077
+  TZ_SETTINGS="$(mktemp /tmp/tz-maven-settings.XXXXXX)"
+  {
+    echo '<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"><servers>'
+    for id in $ids; do
+      echo "<server><id>$id</id><username>\${env.NEXUS_USERNAME}</username><password>\${env.NEXUS_PASSWORD}</password></server>"
+    done
+    echo '</servers></settings>'
+  } > "$TZ_SETTINGS"
+  chmod 600 "$TZ_SETTINGS"
+  echo "[tz] Maven credentials: settings generated in the build container (placeholders for NEXUS_USERNAME and NEXUS_PASSWORD) for repository ids: $ids"
+  if [ "${TZ_SHOW_SETTINGS:-}" = 1 ]; then echo "[tz] settings file mode: $(stat -c %a "$TZ_SETTINGS")"; sed 's/^/[tz] settings| /' "$TZ_SETTINGS"; fi
+}
+
+ARGS=(-B -ntp -Dstyle.color=never -Dmaven.test.redirectTestOutputToFile=true)
 if [ -n "${SETTINGS_FILE:-}" ]; then
   [ -f "/ws/$SETTINGS_FILE" ] || { echo "settings file not found in the repository: $SETTINGS_FILE"; echo "TZ-BUILD-RC=92"; exit 0; }
   ARGS+=(-s "/ws/$SETTINGS_FILE")
+  echo "[tz] Maven settings file from the repository: $SETTINGS_FILE (no settings generated)"
+elif [ -n "${NEXUS_USERNAME:-}" ] && [ -n "${NEXUS_PASSWORD:-}" ]; then
+  gen_settings
+  [ -z "$TZ_SETTINGS" ] || ARGS+=(-s "$TZ_SETTINGS")
 fi
 read -r -a EXTRA <<< "${TZ_MAVEN_ARGS:-}"
 if [ "$RUN_TESTS" = true ]; then ARGS+=(-Dmaven.test.failure.ignore=true); else ARGS+=(-DskipTests); fi
 GOALS=(clean)
-if grep -rq --include=pom.xml "jacoco-maven-plugin" .; then echo "JaCoCo is configured in the poms: using it"; GOALS+=(verify)
-else GOALS+=("org.jacoco:jacoco-maven-plugin:$JACOCO:prepare-agent" verify "org.jacoco:jacoco-maven-plugin:$JACOCO:report"); fi
-GOALS+=(org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies)
+# coverage (JaCoCo): TZ-COVERAGE-BEGIN
+TZ_TOOLS=/ws/.tz-tools; TZ_COV=/ws/.tz-coverage; mkdir -p "$TZ_TOOLS" "$TZ_COV"
+if [ "$RUN_TESTS" = true ]; then
+  # the JaCoCo agent and command line tool, fetched like any other Maven artifact (same settings, same Nexus)
+  for a in "org.jacoco:org.jacoco.agent:$JACOCO:jar:runtime" "org.jacoco:org.jacoco.cli:$JACOCO:jar:nodeps"; do
+    (cd /tmp && mvn "${ARGS[@]}" -q org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy -Dartifact="$a" -DoutputDirectory="$TZ_TOOLS" -Dmdep.stripVersion=true >/dev/null 2>&1) || echo "[tz] note: could not fetch $a (coverage fallbacks are limited)"
+  done
+fi
+JC_POM=0
+if grep -rq --include=pom.xml "jacoco-maven-plugin" .; then
+  JC_POM=1
+  # a plugin that is only declared (pluginManagement) or sits in an inactive profile produces nothing: then add it ourselves
+  if mvn "${ARGS[@]}" -q help:effective-pom -Doutput=/tmp/tz-effective-pom.xml >/dev/null 2>&1 && ! sed "/<pluginManagement>/,/<\/pluginManagement>/d; /<profiles>/,/<\/profiles>/d" /tmp/tz-effective-pom.xml | grep -q "<goal>prepare-agent"; then
+    JC_POM=0; echo "[tz] JaCoCo is declared in the poms but not bound to the build (pluginManagement or an inactive profile): adding it from the command line"
+  fi
+fi
+if [ "$RUN_TESTS" = true ] && [ -s "$TZ_TOOLS/org.jacoco.agent-runtime.jar" ] && grep -rh --include=pom.xml "<argLine>" . | grep -vqE "@[{]argLine[}]|[$][{]argLine[}]"; then
+  # a literal <argLine> in the Surefire/Failsafe configuration replaces the agent that JaCoCo adds: attach the agent to every forked JVM instead
+  echo "[tz] A <argLine> in a pom overrides the JaCoCo agent: attaching the agent through JAVA_TOOL_OPTIONS (report built from its execution data)"
+  export JAVA_TOOL_OPTIONS="-javaagent:$TZ_TOOLS/org.jacoco.agent-runtime.jar=destfile=$TZ_COV/jacoco.exec,append=true"
+  GOALS+=(verify -Djacoco.skip=true)
+elif [ "$JC_POM" = 1 ]; then echo "[tz] JaCoCo is configured in the poms: using it"; GOALS+=(verify -Djacoco.skip=false)
+else GOALS+=("org.jacoco:jacoco-maven-plugin:$JACOCO:prepare-agent" verify "org.jacoco:jacoco-maven-plugin:$JACOCO:report" -Djacoco.skip=false); fi
+# coverage (JaCoCo): TZ-COVERAGE-END
+GOALS+=(org.apache.maven.plugins:maven-dependency-plugin:3.8.1:copy-dependencies -Dsilent=true)
 echo "+ mvn ${ARGS[*]} ${GOALS[*]} ${EXTRA[*]:-}"
 mvn "${ARGS[@]}" "${GOALS[@]}" "${EXTRA[@]}"
-echo "TZ-BUILD-RC=$?"'
+echo "TZ-BUILD-RC=$?"
+EOS
     ;;
   gradle)
     BUILD_SCRIPT='set -u
 cd "/ws/$SRC_DIR" || exit 90
 chmod +x ./gradlew 2>/dev/null
 if [ -x ./gradlew ]; then G=./gradlew; else echo "no Gradle wrapper found: add ./gradlew to the repository or use build_command"; echo "TZ-BUILD-RC=91"; exit 0; fi
-if [ "$RUN_TESTS" = true ]; then $G --no-daemon --continue build; else $G --no-daemon -x test build; fi
+# coverage (JaCoCo) for Gradle: an init script (nothing is edited in the repository) applies the jacoco plugin when the build does not
+# and makes every Test task produce the XML report (build/reports/jacoco/test/jacocoTestReport.xml)
+printf "%s\n" "allprojects { p ->" "  p.plugins.withId(\"java\") {" "    if (!p.plugins.hasPlugin(\"jacoco\")) { p.pluginManager.apply(\"jacoco\"); p.jacoco.toolVersion = \"$JACOCO\" }" "    p.tasks.matching { it.name == \"jacocoTestReport\" }.configureEach { try { it.reports.xml.required = true } catch (Throwable e) { it.reports.xml.enabled = true } }" "    p.tasks.withType(Test).configureEach { it.finalizedBy(\"jacocoTestReport\") }" "  }" "}" > /tmp/tz-jacoco.init.gradle
+if [ "$RUN_TESTS" = true ]; then $G --no-daemon --continue -I /tmp/tz-jacoco.init.gradle build; else $G --no-daemon -x test build; fi
 rc=$?
 if [ "$rc" -ne 0 ] && [ "$RUN_TESTS" = true ] && find . -path "*/build/classes" -type d | grep -q .; then echo "Gradle reported failures (failing tests); the compiled classes exist, so the analysis continues"; rc=0; fi
 echo "TZ-BUILD-RC=$rc"'
@@ -142,14 +253,66 @@ esac
 cd "/ws/$SRC_DIR" || exit 90
 bash -c "$BUILD_COMMAND"
 echo "TZ-BUILD-RC=$?"'
+# Maven: the live log shows only the command line, warnings and errors, the test summary per module and the build result.
+# The full output is kept (temporary file) and its last 200 lines are printed when the build fails.
+IFS= read -r -d '' AWK_FILTER <<'EOS' || true
+function show(s) { print s; fflush() }
+/^\[tz\] / || /^\+ mvn / || /^settings file not found/ { show($0); next }
+/^\[INFO\] Building [^ ]+ [^ ]+( +\[[0-9]+\/[0-9]+\])?$/ && $3 !~ /:$/ { mod = $3; next }
+/^\[(INFO|WARNING|ERROR)\] Tests run: [0-9]+, Failures: [0-9]+, Errors: [0-9]+, Skipped: [0-9]+$/ {
+  s = $0; sub(/^\[[A-Z]+\] /, "", s); m = (mod == "" ? "project" : mod); show("[tests] " m ": " s); next }
+/^\[INFO\] Reactor Summary/ { inrs = 1 }
+inrs && /^\[INFO\] BUILD / { inrs = 0 }
+inrs { show($0); next }
+/^\[INFO\] (BUILD (SUCCESS|FAILURE)|Total time:)/ { show($0); next }
+/^\[ERROR\]/ { if (!($0 in seen)) { seen[$0] = 1; show($0) }; next }
+/^\[WARNING\]/ { if (!($0 in seen)) { seen[$0] = 1; nw++; if (nw <= 60) show($0); else if (nw == 61) show("[WARNING] more warnings omitted") }; next }
+EOS
+FILTER=(cat)
+if [ "$BUILD_TOOL" = maven ] && [ -z "${BUILD_COMMAND:-}" ]; then FILTER=(awk "$AWK_FILTER"); fi
 docker run --rm --label "$LABEL" --security-opt no-new-privileges -v "$VOL:/ws" -e "SRC_DIR=$SOURCES" -e "RUN_TESTS=$RUN_TESTS" -e "JACOCO=$JACOCO" \
   -e "TZ_MAVEN_ARGS=${MAVEN_ARGS:-}" -e "SETTINGS_FILE=${SETTINGS_FILE:-}" -e "BUILD_COMMAND=${BUILD_COMMAND:-}" \
+  -e "TZ_PRIVATE_IDS=${MAVEN_PRIVATE_REPO_IDS:-}" -e "TZ_PUBLIC_HOSTS=$PUBLIC_MAVEN_HOSTS" -e "TZ_SHOW_SETTINGS=${TZ_SHOW_SETTINGS:-}" \
   -e NEXUS_USERNAME -e NEXUS_PASSWORD \
-  --entrypoint bash "$BUILD_IMAGE" -c "$BUILD_SCRIPT" 2>&1 | tee "$OUT"
+  --entrypoint bash "$BUILD_IMAGE" -c "$BUILD_SCRIPT" 2>&1 | tee "$OUT" | "${FILTER[@]}"
 BUILD_RC="$(sed -n 's/^TZ-BUILD-RC=//p' "$OUT" | tail -n1)"
 if [ "${BUILD_RC:-1}" -ne 0 ]; then
+  if [ "${FILTER[0]}" != cat ]; then echo "----- last 200 lines of the build output"; tail -n 200 "$OUT"; echo "----- end of the build output"; fi
+  if grep -qE 'status code: 40[13]|Return code is: 40[13]|401 Unauthorized|403 Forbidden' "$OUT"; then
+    if [ -z "${NEXUS_USERNAME:-}" ]; then
+      echo "::error::the repository needs credentials: pass NEXUS_USERNAME and NEXUS_PASSWORD to the workflow (secrets: inherit or explicit)"
+    else
+      echo "::error::the repository rejected the credentials, or its repository id is not declared in the project poms: check NEXUS_USERNAME and NEXUS_PASSWORD, or set MAVEN_PRIVATE_REPO_IDS (comma separated repository ids, for ids declared only in a parent pom)"
+    fi
+  fi
   fail "the build failed for $SERVICE (exit ${BUILD_RC:-unknown}): see the build output above" "The Java build failed (compile or dependency error, see the step log)"
 fi
+if [ "${TZ_TEST_STOP_AFTER_BUILD:-}" = 1 ]; then echo "[test hook] TZ_TEST_STOP_AFTER_BUILD=1: stopping after the successful build, no scan"; exit 0; fi
+
+# ---- 4b) coverage: find the JaCoCo XML reports wherever the build wrote them (any folder, several modules, unit and
+# integration tests); when no report has data but execution data exists (agent through argLine override, tests in a
+# separate module) build one report from all execution data, all compiled classes and all main sources.
+read -r -d '' COV_SCRIPT <<'EOS' || true
+cd "/ws/$SRC_DIR" 2>/dev/null || exit 0
+NEWER=(); [ -d /ws/.tz-tools ] && NEWER=(-newer /ws/.tz-tools)
+find_xml() { grep -rl --include=*.xml -m1 '//JACOCO//DTD Report' . 2>/dev/null | grep -vE '/(node_modules|\.git)/' | while read -r f; do [ -n "$(find "$f" "${NEWER[@]}" 2>/dev/null)" ] && grep -q '<counter type="LINE"' "$f" && echo "$f"; done; }
+EXEC="$(find . -type f -name '*.exec' \( -path '*/target/*' -o -path '*/build/*' -o -path './.tz-coverage/*' \) -not -path '*/node_modules/*' 2>/dev/null | head -200 | tr '\n' ' ')"
+XML="$(find_xml)"
+if [ -z "$XML" ] && [ -n "$EXEC" ] && [ -s /ws/.tz-tools/org.jacoco.cli-nodeps.jar ]; then
+  CF=(); SF=()
+  while read -r d; do CF+=(--classfiles "$d"); done < <(find . -type d \( -path '*/target/classes' -o -path '*/build/classes/java/main' -o -path '*/build/classes/kotlin/main' \) -not -path '*/node_modules/*')
+  while read -r d; do SF+=(--sourcefiles "$d"); done < <(find . -type d \( -path '*/src/main/java' -o -path '*/src/main/kotlin' \) -not -path '*/node_modules/*')
+  mkdir -p /ws/.tz-coverage
+  if [ "${#CF[@]}" -gt 0 ] && java -jar /ws/.tz-tools/org.jacoco.cli-nodeps.jar report $EXEC "${CF[@]}" "${SF[@]}" --xml /ws/.tz-coverage/jacoco-merged.xml >/tmp/tz-cli.log 2>&1; then
+    grep -q '<counter type="LINE"' /ws/.tz-coverage/jacoco-merged.xml && echo "TZ-COV-XML=.tz-coverage/jacoco-merged.xml"
+  else echo "TZ-COV-MSG=the JaCoCo report could not be built from the execution data"; tail -n 3 /tmp/tz-cli.log; fi
+fi
+for f in $XML; do echo "TZ-COV-XML=$(realpath --relative-to=/ws "$f")"; done
+echo "TZ-COV-EXEC=$(echo $EXEC | wc -w)"
+EOS
+COV_OUT="$(docker run --rm --label "$LABEL" -v "$VOL:/ws" -e "SRC_DIR=$SOURCES" --entrypoint bash "$BUILD_IMAGE" -c "$COV_SCRIPT" 2>/dev/null)"
+COV_PATHS="$(sed -n 's/^TZ-COV-XML=//p' <<<"$COV_OUT" | paste -sd, -)"   # paths relative to the volume root = scanner base dir
+COV_EXEC="$(sed -n 's/^TZ-COV-EXEC=//p' <<<"$COV_OUT" | tail -n1)"; COV_EXEC="${COV_EXEC:-0}"
 
 # unit test results: counted from the Surefire, Failsafe and Gradle XML reports inside the volume
 read -r -d '' COUNT_SCRIPT <<'EOS' || true
@@ -170,6 +333,15 @@ echo "Unit tests: run $TESTS, failed $TFAIL, errors $TERR, skipped $TSKIP"
 if [ "$RUN_TESTS" = true ] && [ "$TESTS" -eq 0 ]; then echo "::notice::no unit tests were found for $SERVICE (the scan runs without test results; coverage appears when tests are added)"; fi
 out test-failures "$FAILS"
 [ "$FAILS" -gt 0 ] && echo "::warning::$FAILS unit test(s) failed for $SERVICE; the Sonar analysis still runs"
+# coverage messages (warnings only; they never fail the scan)
+if [ "$RUN_TESTS" = true ] && [ "$BUILD_TOOL" = maven ]; then
+  if [ "$TESTS" -gt 0 ] && [ -z "$COV_PATHS" ]; then
+    echo "::warning::tests ran for $SERVICE but no JaCoCo coverage data was found (check: JaCoCo skipped in the pom, a plugin configuration that drops the agent, or test code that forks its own JVM); Sonar will show no coverage"
+  elif [ "$TESTS" -eq 0 ] && grep -rqE --include=pom.xml '<(skipTests|maven\.test\.skip)>true<' "$PD" 2>/dev/null; then
+    echo "::warning::the pom sets skipTests/maven.test.skip=true, so no tests run for $SERVICE and there is no coverage; remove it or set it per profile"
+  fi
+fi
+[ -n "$COV_PATHS" ] && echo "JaCoCo reports passed to Sonar: $COV_PATHS"
 
 # ---- 5) scanner arguments: the repo's own sonar-project.properties wins for every key it sets
 PROPS="$WORKSPACE/sonar-project.properties"
@@ -191,13 +363,13 @@ fi
 if [ "$BUILD_TOOL" = gradle ]; then
   def sonar.java.binaries '**/build/classes/java/main,**/build/classes/kotlin/main'
   def sonar.java.test.binaries '**/build/classes/java/test,**/build/classes/kotlin/test'
-  def sonar.coverage.jacoco.xmlReportPaths '**/build/reports/jacoco/**/*.xml'
+  def sonar.coverage.jacoco.xmlReportPaths "${COV_PATHS:-**/build/reports/jacoco/**/*.xml}"
   def sonar.exclusions '**/build/**,**/src/test/**'
 else
   def sonar.java.binaries '**/target/classes'
   def sonar.java.test.binaries '**/target/test-classes'
   def sonar.java.libraries '**/target/dependency/*.jar'
-  def sonar.coverage.jacoco.xmlReportPaths '**/target/site/jacoco/jacoco.xml'
+  def sonar.coverage.jacoco.xmlReportPaths "${COV_PATHS:-**/target/site/jacoco/jacoco.xml}"
   def sonar.exclusions '**/target/**,**/src/test/**'
 fi
 def sonar.sources "$SOURCES"
