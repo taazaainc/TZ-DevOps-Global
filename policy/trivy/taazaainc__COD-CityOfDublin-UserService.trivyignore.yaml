@@ -1,0 +1,8 @@
+# Trivy exceptions for the User Service. Every entry expires; see policy/README.md.
+vulnerabilities:
+  - id: CVE-2026-47884
+    statement: "spring-webmvc 6.2.19, fixed only in 7.0.9 (Spring Boot 4). Believed not reachable: needs XsltView, and the service is JSON REST only. Assessment from the service PR notes, to be confirmed by the approver. Requested by the User Service team, ticket DataService#4484. Remove when the service moves to Spring Boot 4"
+    expired_at: 2027-02-15
+  - id: CVE-2026-47890
+    statement: "spring-webmvc 6.2.19, fixed only in 7.0.9 (Spring Boot 4). Believed not reachable: needs SSE view fragments, and the service is JSON REST only. Assessment from the service PR notes, to be confirmed by the approver. Requested by the User Service team, ticket DataService#4484. Remove when the service moves to Spring Boot 4"
+    expired_at: 2027-02-15
