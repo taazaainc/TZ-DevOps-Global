@@ -1,0 +1,11 @@
+# Trivy exceptions for AssessingOfficer (recon-service). Every entry expires; see policy/README.md.
+vulnerabilities:
+  - id: CVE-2026-47884
+    statement: "spring-webmvc 6.2.19, fixed only in 7.0.9 (Spring Boot 4, DataService#4114). Believed not reachable: needs XsltView with a /** mapping and no explicit view name, and recon-service has no XsltView (searched src/main on deploy/dev, 2026-11-24). Assessment to be confirmed by the approver. Requested by the AO team (abdulkhan-tz), ticket DataService#4113"
+    expired_at: 2027-02-15
+  - id: CVE-2026-47890
+    statement: "spring-webmvc and spring-webflux 6.2.19, fixed only in 7.0.9 (Spring Boot 4, DataService#4114). Believed not reachable: needs view fragments streamed over Server-Sent Events, and recon-service has no SseEmitter, ServerSentEvent or FragmentsRendering (searched src/main on deploy/dev, 2026-11-24). Assessment to be confirmed by the approver. Requested by the AO team (abdulkhan-tz), ticket DataService#4113"
+    expired_at: 2027-02-15
+  - id: CVE-2026-47892
+    statement: "spring-webflux 6.2.19, fixed only in 7.0.9 (Spring Boot 4, DataService#4114). Believed not reachable: needs WebFlux functional endpoints (RouterFunction) with header predicates, and recon-service has none; WebFlux is used only for WebClient (searched src/main on deploy/dev, 2026-11-24). Assessment to be confirmed by the approver. Requested by the AO team (abdulkhan-tz), ticket DataService#4113"
+    expired_at: 2027-02-15
