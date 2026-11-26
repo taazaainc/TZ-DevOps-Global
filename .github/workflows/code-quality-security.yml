@@ -174,15 +174,20 @@ jobs:
           echo "=== Environment Check ==="
           echo "Service: ${{ matrix.service.name }}"
           echo "Project Path: $MAIN_PROJECT_PATH"
-          echo ".NET Version: $DOTNET_VERSION"
+          if [ -z "$SCANNER_TYPE_EFFECTIVE" ]; then
+            echo ".NET Version: $DOTNET_VERSION"
+          fi
           echo "Scanner: ${SCANNER_TYPE_EFFECTIVE:-dotnet}"
           echo "SonarQube Project: $SONAR_PROJECT_KEY"
-          echo ""
-          echo "Available .NET SDKs:"
-          dotnet --list-sdks
-          echo ""
-          echo "Installed Tools:"
-          dotnet tool list --global
+          # The .NET details only make sense for the .NET scan path (effective scanner empty).
+          if [ -z "$SCANNER_TYPE_EFFECTIVE" ]; then
+            echo ""
+            echo "Available .NET SDKs:"
+            dotnet --list-sdks
+            echo ""
+            echo "Installed Tools:"
+            dotnet tool list --global
+          fi
           echo ""
       # Starts the short result card shown in the job summary (one per service).
       - name: Prepare result card
