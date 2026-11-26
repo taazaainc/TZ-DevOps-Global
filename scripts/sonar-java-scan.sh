@@ -59,7 +59,7 @@ out() { [ -n "${GITHUB_OUTPUT:-}" ] && echo "$1=$2" >> "$GITHUB_OUTPUT"; return 
 out test-failures 0
 pol() { sed -n "s/^$1=//p" "${POLICY_FILE:-/dev/null}" 2>/dev/null | tr -d '\r' | head -n1; }
 
-if [ -n "${MAVEN_CENTRAL_MIRROR:-}" ] && [[ ! "$MAVEN_CENTRAL_MIRROR" =~ ^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._~/-]*)?$ ]]; then
+if [ -n "${MAVEN_CENTRAL_MIRROR:-}" ] && [[ ! "$MAVEN_CENTRAL_MIRROR" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$ ]]; then
   fail "maven-central-mirror is not a valid https URL" "Sonar scan setup error (Maven Central mirror)"
 fi
 PD="$WORKSPACE/$SOURCES"

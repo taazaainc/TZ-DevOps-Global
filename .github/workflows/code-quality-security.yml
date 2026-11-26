@@ -67,8 +67,8 @@ on:
           Optional https URL of a Maven Central mirror for Java services, for example
           https://maven-central.storage-download.googleapis.com/maven2/ when repo.maven.apache.org
           rate-limits the runner IP (HTTP 429). Empty (default): nothing changes. When set, the Sonar Java build
-          and the Docker build for Trivy get the mirror for "central" (Docker build: the checkout copy of the
-          build context's settings.xml only, nothing is committed). Private repositories are not affected.
+          gets the mirror for "central", and the Docker build for Trivy gets it when the build context has a
+          settings.xml at its root (checkout copy only, nothing is committed). Private repositories are not affected.
         required: false
         default: ""
         type: string
@@ -244,7 +244,7 @@ jobs:
           # -s settings.xml still accepts the files already downloaded. Comments are removed from that copy first.
           CTX="${{ matrix.service.context_path }}"; CTX="${CTX:-.}"
           if [ -n "$MAVEN_CENTRAL_MIRROR" ] && [ "$SCANNER_TYPE_EFFECTIVE" = java ] && [ -f "$CTX/settings.xml" ]; then
-            if [[ ! "$MAVEN_CENTRAL_MIRROR" =~ ^https://[A-Za-z0-9.-]+(/[A-Za-z0-9._~/-]*)?$ ]]; then
+            if [[ ! "$MAVEN_CENTRAL_MIRROR" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$ ]]; then
               echo "::error::maven-central-mirror is not a valid https URL"; exit 1
             fi
             MIRROR="<mirror><id>central</id><mirrorOf>central</mirrorOf><url>$MAVEN_CENTRAL_MIRROR</url></mirror>"
