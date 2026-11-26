@@ -46,6 +46,10 @@ inputs:
     description: Optional Maven settings file inside the repository
     required: false
     default: ""
+  maven-central-mirror:
+    description: Optional https URL of a Maven Central mirror (id "central"); not used when settings-file is set
+    required: false
+    default: ""
   build-command:
     description: Optional full build command (overrides the default build, runs in the build image)
     required: false
@@ -80,6 +84,7 @@ runs:
         RUN_TESTS: ${{ inputs.run-tests }}
         MAVEN_ARGS: ${{ inputs.maven-args }}
         SETTINGS_FILE: ${{ inputs.settings-file }}
+        MAVEN_CENTRAL_MIRROR: ${{ inputs.maven-central-mirror }}
         BUILD_COMMAND: ${{ inputs.build-command }}
         EXTRA_SONAR_ARGS: ${{ inputs.extra-sonar-args }}
         IGNORED_IMAGE: ${{ inputs.ignored-image }}
