@@ -15,6 +15,8 @@
 #   MAVEN_ARGS       extra Maven arguments, for example a profile: -Pci
 #   SETTINGS_FILE    optional Maven settings file inside the repo (may use ${env.NEXUS_USERNAME} and ${env.NEXUS_PASSWORD});
 #                    when set, it has full control and no settings are generated
+#   MAVEN_CENTRAL_MIRROR  optional https URL of a Maven Central mirror; added to the generated settings with the id
+#                    "central" (a settings file without credentials is generated for it when needed); not used with SETTINGS_FILE
 #   MAVEN_PRIVATE_REPO_IDS  optional, comma separated Maven repository ids that need the NEXUS credentials although the
 #                    project poms do not declare them (for example ids declared only by a parent pom in a private repository)
 #   BUILD_COMMAND    full override of the build command (runs in the build image from the project folder)
@@ -57,6 +59,9 @@ out() { [ -n "${GITHUB_OUTPUT:-}" ] && echo "$1=$2" >> "$GITHUB_OUTPUT"; return 
 out test-failures 0
 pol() { sed -n "s/^$1=//p" "${POLICY_FILE:-/dev/null}" 2>/dev/null | tr -d '\r' | head -n1; }
 
+if [ -n "${MAVEN_CENTRAL_MIRROR:-}" ] && [[ ! "$MAVEN_CENTRAL_MIRROR" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$ ]]; then
+  fail "maven-central-mirror is not a valid https URL" "Sonar scan setup error (Maven Central mirror)"
+fi
 PD="$WORKSPACE/$SOURCES"
 [ -d "$PD" ] || fail "project folder '$SOURCES' does not exist in the checkout" "The Java project folder was not found"
 
@@ -196,6 +201,17 @@ elif [ -n "${NEXUS_USERNAME:-}" ] && [ -n "${NEXUS_PASSWORD:-}" ]; then
   gen_settings
   [ -z "$TZ_SETTINGS" ] || ARGS+=(-s "$TZ_SETTINGS")
 fi
+# optional Maven Central mirror (id "central"), only when the settings are generated here
+if [ -z "${SETTINGS_FILE:-}" ] && [ -n "${TZ_CENTRAL_MIRROR:-}" ]; then
+  if [ -z "$TZ_SETTINGS" ]; then
+    umask 077
+    TZ_SETTINGS="$(mktemp /tmp/tz-maven-settings.XXXXXX)"
+    echo '<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0"></settings>' > "$TZ_SETTINGS"
+    ARGS+=(-s "$TZ_SETTINGS")
+  fi
+  sed -i "s#</settings>#<mirrors><mirror><id>central</id><mirrorOf>central</mirrorOf><url>$TZ_CENTRAL_MIRROR</url></mirror></mirrors></settings>#" "$TZ_SETTINGS"
+  echo "[tz] Maven Central mirror: $TZ_CENTRAL_MIRROR"
+fi
 read -r -a EXTRA <<< "${TZ_MAVEN_ARGS:-}"
 if [ "$RUN_TESTS" = true ]; then ARGS+=(-Dmaven.test.failure.ignore=true); else ARGS+=(-DskipTests); fi
 GOALS=(clean)
@@ -273,6 +289,7 @@ if [ "$BUILD_TOOL" = maven ] && [ -z "${BUILD_COMMAND:-}" ]; then FILTER=(awk "$
 docker run --rm --label "$LABEL" --security-opt no-new-privileges -v "$VOL:/ws" -e "SRC_DIR=$SOURCES" -e "RUN_TESTS=$RUN_TESTS" -e "JACOCO=$JACOCO" \
   -e "TZ_MAVEN_ARGS=${MAVEN_ARGS:-}" -e "SETTINGS_FILE=${SETTINGS_FILE:-}" -e "BUILD_COMMAND=${BUILD_COMMAND:-}" \
   -e "TZ_PRIVATE_IDS=${MAVEN_PRIVATE_REPO_IDS:-}" -e "TZ_PUBLIC_HOSTS=$PUBLIC_MAVEN_HOSTS" -e "TZ_SHOW_SETTINGS=${TZ_SHOW_SETTINGS:-}" \
+  -e "TZ_CENTRAL_MIRROR=${MAVEN_CENTRAL_MIRROR:-}" \
   -e NEXUS_USERNAME -e NEXUS_PASSWORD \
   --entrypoint bash "$BUILD_IMAGE" -c "$BUILD_SCRIPT" 2>&1 | tee "$OUT" | "${FILTER[@]}"
 BUILD_RC="$(sed -n 's/^TZ-BUILD-RC=//p' "$OUT" | tail -n1)"

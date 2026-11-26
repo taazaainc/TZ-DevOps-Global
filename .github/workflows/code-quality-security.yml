@@ -62,6 +62,16 @@ on:
         required: false
         default: ""
         type: string
+      maven-central-mirror:
+        description: >
+          Optional https URL of a Maven Central mirror for Java services, for example
+          https://maven-central.storage-download.googleapis.com/maven2/ when repo.maven.apache.org
+          rate-limits the runner IP (HTTP 429). Empty (default): nothing changes. When set, the Sonar Java build
+          gets the mirror for "central", and the Docker build for Trivy gets it when the build context has a
+          settings.xml at its root (checkout copy only, nothing is committed). Private repositories are not affected.
+        required: false
+        default: ""
+        type: string
     secrets:
       SONAR_TOKEN:
         description: SonarQube authentication token
@@ -147,6 +157,7 @@ jobs:
       SCANNER_TYPE_EFFECTIVE: ${{ matrix.service.scanner_type || (matrix.service.language == 'java' && 'java' || '') }}
       NEXUS_USERNAME: ${{ secrets.NEXUS_USERNAME }}
       NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
+      MAVEN_CENTRAL_MIRROR: ${{ inputs.maven-central-mirror }}
       # unique per repo run, attempt and matrix job: shared Docker daemons must never mix up scan images
       SCAN_IMAGE_TAG: scan-${{ github.run_id }}-${{ github.run_attempt }}-${{ strategy.job-index }}
 
@@ -227,6 +238,26 @@ jobs:
         run: |
           cd $GITHUB_WORKSPACE_DIR
           export IMAGE_TAG="$SCAN_IMAGE_TAG"   # unique per repo, run, attempt and matrix job
+
+          # Optional Maven Central mirror (input maven-central-mirror), Java services only. Added to the checkout copy of
+          # the build context's settings.xml with the id "central", so a later mvn call in the Dockerfile without
+          # -s settings.xml still accepts the files already downloaded. Comments are removed from that copy first.
+          CTX="${{ matrix.service.context_path }}"; CTX="${CTX:-.}"
+          if [ -n "$MAVEN_CENTRAL_MIRROR" ] && [ "$SCANNER_TYPE_EFFECTIVE" = java ] && [ -f "$CTX/settings.xml" ]; then
+            if [[ ! "$MAVEN_CENTRAL_MIRROR" =~ ^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[A-Za-z0-9._~/-]*)?$ ]]; then
+              echo "::error::maven-central-mirror is not a valid https URL"; exit 1
+            fi
+            MIRROR="<mirror><id>central</id><mirrorOf>central</mirrorOf><url>$MAVEN_CENTRAL_MIRROR</url></mirror>"
+            sed -E -i ':a;N;$!ba;s/<!--([^-]|-[^-])*-->//g' "$CTX/settings.xml"
+            if grep -q '<mirrors>' "$CTX/settings.xml"; then
+              sed -i "0,/<mirrors>/s##<mirrors>$MIRROR#" "$CTX/settings.xml"
+            elif grep -q '<mirrors */>' "$CTX/settings.xml"; then
+              sed -i "0,/<mirrors *\/>/s##<mirrors>$MIRROR</mirrors>#" "$CTX/settings.xml"
+            else
+              sed -i "s#</settings>#<mirrors>$MIRROR</mirrors></settings>#" "$CTX/settings.xml"
+            fi
+            echo "Maven Central mirror for this scan build: $MAVEN_CENTRAL_MIRROR (checkout copy of $CTX/settings.xml)"
+          fi
           export IMAGE_NAME=${{ matrix.service.image_name }}
 
           echo "Building Docker image: $IMAGE_NAME:$IMAGE_TAG"
@@ -336,6 +367,7 @@ jobs:
           run-tests: ${{ format('{0}', matrix.service.run_tests) == 'false' && 'false' || 'true' }}
           maven-args: ${{ matrix.service.maven_args }}
           settings-file: ${{ matrix.service.settings_file }}
+          maven-central-mirror: ${{ inputs.maven-central-mirror }}
           build-command: ${{ matrix.service.build_command }}
           ignored-image: ${{ inputs.sonar_java_image }}
       - name: SonarQube Quality Gate Check (Java)
